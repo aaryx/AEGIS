@@ -1,0 +1,4 @@
+[
+  {"source":"synthetic-nginx","source_type":"nginx","collector":"sample-file","raw_event":"192.0.2.44 - - [28/Sep/2026:12:00:00 +0000] \"GET /../../etc/passwd HTTP/1.1\" 403 100 \"-\" \"synthetic-client\""},
+  {"source":"synthetic-nginx","source_type":"nginx","collector":"sample-file","raw_event":"192.0.2.55 - - [28/Sep/2026:12:00:01 +0000] \"GET /health HTTP/1.1\" 200 20 \"-\" \"synthetic-client\""}
+]

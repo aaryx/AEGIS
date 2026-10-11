@@ -1,0 +1,151 @@
+name: aegis
+
+x-app: &app
+  build: .
+  image: aegis-api:local
+  environment: &environment
+    ENVIRONMENT: ${ENVIRONMENT:-development}
+    AUDIT_SECRET: ${AUDIT_SECRET:?Run python scripts/configure.py}
+    PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:3000}
+    COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    AI_PROVIDER: ${AI_PROVIDER:-local}
+    AI_API_KEY: ${AI_API_KEY:-}
+    AI_ENDPOINT: ${AI_ENDPOINT:-https://api.openai.com/v1/chat/completions}
+    AI_MODEL: ${AI_MODEL:-gpt-4.1-mini}
+    INTEGRATION_ALLOWED_HOSTS: ${INTEGRATION_ALLOWED_HOSTS:-[]}
+    AEGIS_INTEGRATION_SOC_WEBHOOK: ${AEGIS_INTEGRATION_SOC_WEBHOOK:-}
+    AEGIS_INTEGRATION_IOC_FEED: ${AEGIS_INTEGRATION_IOC_FEED:-}
+    DETECTION_LATENESS_SECONDS: ${DETECTION_LATENESS_SECONDS:-120}
+    DATABASE_URL: postgresql+psycopg://aegis_runtime:${POSTGRES_RUNTIME_PASSWORD:-${POSTGRES_PASSWORD}}@postgres:5432/aegis
+    REDIS_URL: redis://:${REDIS_PASSWORD:?Run python scripts/configure.py}@redis:6379/0
+    OPENSEARCH_URL: http://opensearch:9200
+    OPENSEARCH_USERNAME: aegis
+    OPENSEARCH_PASSWORD: ${OPENSEARCH_PASSWORD:?Run python scripts/configure.py}
+  networks: [backend, edge]
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  read_only: true
+  tmpfs: [/tmp]
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:17.9-bookworm
+    environment:
+      POSTGRES_DB: aegis
+      POSTGRES_USER: aegis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run python scripts/configure.py}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    networks: [backend]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U aegis -d aegis"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  redis:
+    image: redis:7.4.8-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Run python scripts/configure.py}
+    command: [sh, -c, 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD" --maxmemory 256mb --maxmemory-policy noeviction']
+    volumes: [redis-data:/data]
+    networks: [backend]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  opensearch:
+    image: opensearchproject/opensearch:3.5.0
+    environment:
+      discovery.type: single-node
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms1g -Xmx1g
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_ADMIN_PASSWORD:?Run python scripts/configure.py}
+      plugins.security.ssl.http.enabled: "false"
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+      nofile: {soft: 65536, hard: 65536}
+    volumes: [opensearch-data:/usr/share/opensearch/data]
+    networks: [backend]
+    healthcheck:
+      test: [CMD-SHELL, 'curl -fsS -u "admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD" http://localhost:9200/_cluster/health >/dev/null']
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+  initialize:
+    <<: *app
+    environment:
+      <<: *environment
+      DATABASE_URL: postgresql+psycopg://aegis:${POSTGRES_PASSWORD:?Run python scripts/configure.py}@postgres:5432/aegis
+      POSTGRES_RUNTIME_PASSWORD: ${POSTGRES_RUNTIME_PASSWORD:-${POSTGRES_PASSWORD}}
+      BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-admin}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:?Run python scripts/configure.py}
+      OPENSEARCH_ADMIN_PASSWORD: ${OPENSEARCH_ADMIN_PASSWORD:?Run python scripts/configure.py}
+    command: [python, scripts/initialize.py]
+    restart: "no"
+    healthcheck: {disable: true}
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      opensearch: {condition: service_healthy}
+  api:
+    <<: *app
+    ports: [127.0.0.1:8000:8000]
+    depends_on:
+      initialize: {condition: service_completed_successfully}
+  worker:
+    <<: *app
+    command: [aegis-worker]
+    depends_on:
+      initialize: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, scripts/worker_health.py]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  cli:
+    <<: *app
+    command: [aegis, --help]
+    profiles: [tools]
+    environment:
+      <<: *environment
+      AEGIS_URL: http://api:8000
+      AEGIS_TOKEN: ${AEGIS_TOKEN:-}
+    restart: "no"
+    healthcheck: {disable: true}
+    depends_on:
+      api: {condition: service_healthy}
+  notifications:
+    <<: *app
+    command: [python, -m, aegis.notification_worker]
+    healthcheck:
+      test: [CMD, python, scripts/worker_health.py, notifications]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    depends_on:
+      initialize: {condition: service_completed_successfully}
+  web:
+    build: ./web
+    image: aegis-web:local
+    ports: [127.0.0.1:3000:3000]
+    networks: [edge]
+    depends_on:
+      api: {condition: service_healthy}
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+networks:
+  backend: {internal: true}
+  edge: {}
+volumes:
+  postgres-data:
+  redis-data:
+  opensearch-data:
