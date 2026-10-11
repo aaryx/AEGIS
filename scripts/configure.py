@@ -16,6 +16,7 @@ values = {
     "POSTGRES_PASSWORD": secrets.token_hex(24),
     "REDIS_PASSWORD": secrets.token_hex(24),
     "POSTGRES_RUNTIME_PASSWORD": secrets.token_hex(24),
+    "POSTGRES_MAINTENANCE_PASSWORD": secrets.token_hex(24),
     "OPENSEARCH_ADMIN_PASSWORD": "Aa1!" + secrets.token_hex(24),
     "OPENSEARCH_PASSWORD": "Aa1!" + secrets.token_hex(24),
     "BOOTSTRAP_USERNAME": "admin",

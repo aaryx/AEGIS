@@ -1,5 +1,7 @@
 import asyncio
 import csv
+import hashlib
+import hmac
 import io
 import json
 import logging
@@ -54,7 +56,7 @@ from aegis.db import (
 from aegis.detection import SQLState, evaluate
 from aegis.investigation import create_report, entity_detail, investigate, owned, report_html
 from aegis.observability import API_LATENCY, API_REQUESTS, SEARCH_LATENCY
-from aegis.parsers import ParserRegistry, digest
+from aegis.parsers import ParserRegistry, canonical, digest
 from aegis.pipeline import ingest
 from aegis.response import execute, request_execution
 from aegis.rules import MITRE
@@ -76,6 +78,7 @@ from aegis.schemas import (
     parse_query,
 )
 from aegis.security import (
+    DUMMY_PASSWORD_HASH,
     PASSWORDS,
     audit,
     authenticate,
@@ -446,17 +449,26 @@ def create_app(settings: Settings | None = None):
             )
         }
 
+    @app.post(PREFIX + "/system/retention", tags=["system"])
+    def trigger_retention(
+        request: Request,
+        dry_run: bool = Query(False),
+        principal=Depends(require("system.manage")),
+    ):
+        rate_limit(request, f"retention:{principal.user.id}", 5)
+        from aegis.retention import RetentionEngine
+
+        engine = RetentionEngine(settings, request.app.state.sessions, request.app.state.storage)
+        summaries = engine.run_cycle(dry_run=dry_run, actor=principal.user.id, request=request)
+        return {"status": "ok", "dry_run": dry_run, "results": [s.to_dict() for s in summaries]}
+
     @app.post(PREFIX + "/auth/login", tags=["auth"])
     def login(data: Login, request: Request, response: Response, db=Depends(db_session)):
         if request.headers.get("origin") not in {None, settings.public_origin}:
             raise HTTPException(403, "Untrusted request origin")
         rate_limit(request, "login:" + (request.client.host if request.client else "unknown"), 10)
         user = db.scalar(select(User).where(User.username == data.username).with_for_update())
-        valid = (
-            check_password(user.password_hash, data.password)
-            if user
-            else check_password(PASSWORDS.hash(secrets.token_urlsafe(20)), data.password)
-        )
+        valid = check_password(user.password_hash if user else DUMMY_PASSWORD_HASH, data.password)
         if not user or not user.active or user.locked_until > time.time() or not valid:
             if user:
                 user.failed_logins += 1
@@ -1458,8 +1470,21 @@ def create_app(settings: Settings | None = None):
         )
         if not execution:
             raise HTTPException(404, "Command execution not found")
-        if execution.status == "VERIFIED":
-            return as_dict(execution)
+        if execution.status not in {"APPROVED", "DISPATCHED"}:
+            raise HTTPException(409, f"Command execution status is '{execution.status}', not awaiting receipt")
+        if execution.action != data.action:
+            raise HTTPException(409, "Receipt action does not match execution command")
+
+        expected_payload = {
+            "command_id": data.command_id,
+            "agent": name,
+            "action": data.action,
+            "status": data.status,
+            "result": data.details,
+        }
+        expected_hash = hashlib.sha256(canonical(expected_payload).encode()).hexdigest()
+        if not hmac.compare_digest(expected_hash, data.receipt_hash):
+            raise HTTPException(400, "Cryptographic execution receipt hash does not match payload")
 
         from aegis.db import now
 
@@ -1806,7 +1831,9 @@ def create_app(settings: Settings | None = None):
                     {
                         key: (
                             "'" + value
-                            if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r"))
+                            if isinstance(value, str)
+                            and (s := value.lstrip(" \t\r\n"))
+                            and s[0] in ("=", "+", "-", "@", "\t", "\r", "%")
                             else json.dumps(value)
                             if isinstance(value, (dict, list))
                             else value

@@ -1,6 +1,6 @@
 import time
 from datetime import datetime
-from itertools import combinations
+from typing import Any
 
 from sqlalchemy import func, select, tuple_
 
@@ -40,7 +40,8 @@ def seed_rules(db, organization_id: str):
 def ingest(db, settings, organization_id: str, events: list[EventInput], actor: str, request=None):
     if len(events) > settings.max_batch_events:
         raise ValueError("Batch exceeds configured event limit")
-    db.scalar(select(Organization).where(Organization.id == organization_id).with_for_update())
+    if not db.scalar(select(Organization.id).where(Organization.id == organization_id)):
+        raise ValueError("Organization not found")
     registry = ParserRegistry()
     normalized = []
     for incoming in events:
@@ -133,7 +134,7 @@ def enrich(event: dict, iocs: list[IOC]) -> list[IOC]:
     return matched
 
 
-def track_entities(db, org, event, cache):
+def track_entities(db, org, event, cache, max_entities: int = 15):
     descriptors = [
         (kind, str(value))
         for field, kind in [
@@ -149,8 +150,10 @@ def track_entities(db, org, event, cache):
         ]
         if (value := get_field(event, field))
     ]
+    # Bound extracted entities per event to prevent combinatorial explosion
+    descriptors = list(dict.fromkeys(descriptors))[:max_entities]
     entities = []
-    for kind, value in dict.fromkeys(descriptors):
+    for kind, value in descriptors:
         key = (kind, value)
         entity = cache.get(key)
         if not entity:
@@ -170,18 +173,62 @@ def track_entities(db, org, event, cache):
         entity.last_seen = max(previous, observed) if previous else observed
         entities.append(entity)
     db.flush()
-    for left, right in combinations(entities, 2):
-        relation_id = digest([org, left.id, right.id, event["event_id"]])
-        if not db.get(EntityRelationship, relation_id):
-            db.add(
-                EntityRelationship(
-                    id=relation_id,
-                    organization_id=org,
-                    source_id=left.id,
-                    target_id=right.id,
-                    event_id=event["event_id"],
-                )
+
+    # Generate semantic relationships instead of indiscriminate complete pairwise graphs
+    pairs: list[tuple[Any, Any, str]] = []
+    by_type: dict[str, list[Any]] = {}
+    for ent in entities:
+        by_type.setdefault(ent.type, []).append(ent)
+
+    for host in by_type.get("host", []):
+        for user in by_type.get("user", []):
+            pairs.append((user, host, "authenticated_on"))
+        for proc in by_type.get("process", []):
+            pairs.append((proc, host, "executed_on"))
+        for ip in by_type.get("ip", []):
+            pairs.append((host, ip, "assigned_ip"))
+        for domain in by_type.get("domain", []):
+            pairs.append((host, domain, "queried_domain"))
+        for url in by_type.get("url", []):
+            pairs.append((host, url, "accessed_url"))
+
+    for proc in by_type.get("process", []):
+        for f in by_type.get("file", []):
+            pairs.append((proc, f, "accessed_file"))
+        for ip in by_type.get("ip", []):
+            pairs.append((proc, ip, "connected_to"))
+
+    for user in by_type.get("user", []):
+        for cloud in by_type.get("cloud_resource", []):
+            pairs.append((user, cloud, "managed_resource"))
+
+    if not pairs and len(entities) >= 2:
+        for i in range(len(entities) - 1):
+            pairs.append((entities[i], entities[i + 1], "observed_with"))
+
+    pairs = pairs[:max_entities]
+    if pairs:
+        candidate_ids = {
+            digest([org, left.id, right.id, event["event_id"]]): (left, right, rel)
+            for left, right, rel in pairs
+        }
+        existing_ids = set(
+            db.scalars(
+                select(EntityRelationship.id).where(EntityRelationship.id.in_(list(candidate_ids.keys())))
             )
+        )
+        for rel_id, (left, right, rel_name) in candidate_ids.items():
+            if rel_id not in existing_ids:
+                db.add(
+                    EntityRelationship(
+                        id=rel_id,
+                        organization_id=org,
+                        source_id=left.id,
+                        target_id=right.id,
+                        event_id=event["event_id"],
+                        relation=rel_name,
+                    )
+                )
     return entities
 
 
@@ -229,7 +276,7 @@ def detect_batch(db, settings, records, redis=None):
         for ioc in enrich(event, iocs):
             if not db.get(IOCMatch, (ioc.id, record.id)):
                 db.add(IOCMatch(ioc_id=ioc.id, event_id=record.id))
-        entities = track_entities(db, org, event, cache)
+        entities = track_entities(db, org, event, cache, max_entities=getattr(settings, "max_entities_per_event", 15))
         record.payload = event
         for row, rule in rules:
             explanation = evaluate(rule, event, state, org)

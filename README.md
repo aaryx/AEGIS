@@ -8,47 +8,37 @@ detection rules; the interface has no separate dashboard dataset.
 
 ## Architecture
 
-**Hardening update:** transactional detection state, independent search outbox,
-checkpointed file collector, signed webhook/Slack/Teams delivery, IOC feed import,
-database tenant/evidence constraints, least-privilege runtime and verified recovery
-are described in [docs/hardening.md](docs/hardening.md).
+**Production Hardening & Remediation:**
+- **Concurrency & Work Claiming**: Removed tenant-wide serialization locks on batch ingest and worker claiming. Workers claim event batches concurrently using PostgreSQL `FOR UPDATE SKIP LOCKED`.
+- **Automated Data Lifecycle**: Integrated `aegis/retention.py` engine with legal hold protection, dedicated maintenance database identity, and OpenSearch index lifecycle management.
+- **Timing-Safe Anti-DoS**: Precomputed Argon2id dummy password hash eliminates CPU-exhaustion DoS on unknown username lookups.
+- **Cryptographic SOAR & Endpoint Daemon**: Active host isolation (Windows `netsh` / Linux `iptables`) with two-person approval, expiration windows, and canonical HMAC/SHA-256 execution receipts.
+- **Native Protocol Ingestion**: High-throughput RFC 5424 and RFC 3164 Syslog engine supporting UDP, TCP octet-counting/newline framing (RFC 6587), and TLS.
+- **SSRF & Export Hardening**: Outbound webhook requests reject loopback and private networks in production; CSV exports neutralize spreadsheet formula injection.
 
-```text
-CLI / Web -> authenticated API -> PostgreSQL durable inbox
-                                      |
-                                    Worker
-                                      |
-                        Parse / normalize / IOC enrichment
-                                      |
-                           OpenSearch event projection
-                                      |
-                     PostgreSQL transactional detection windows
-                                      |
-                    Rules -> correlation -> explainable risk
-                                      |
-                 Alerts / incidents / entities / investigations
-                                      |
-                    Advisory AI / reports / approved response
-                    Independent search + notification outboxes
-```
+Documentation:
+- [System Architecture](docs/architecture/system-architecture.md)
+- [Security Threat Model](docs/security/threat-model.md)
+- [Production Hardening Assessment](docs/security/production-hardening-assessment.md)
+- [Deployment Runbook](docs/operations/deployment.md)
+- [Backup & Disaster Recovery](docs/operations/backup-and-restore.md)
+- [Incident Response & SOAR](docs/operations/incident-response.md)
+- [Retention & Data Lifecycle](docs/operations/retention-and-data-lifecycle.md)
+- [Monitoring & Alerting](docs/operations/monitoring-and-alerting.md)
+- [Performance Testing](docs/testing/performance-testing.md)
+- [Security Testing](docs/testing/security-testing.md)
+- [Rollback Runbook](docs/operations/rollback.md)
 
 ### Implemented capabilities
 
-- Evidence-preserving Linux authentication, web access, Windows JSON event,
-  syslog/firewall, journald export, Docker JSON and AWS/Azure/GCP export parsers.
-- Stable event identities, batched durable acceptance, retry/backoff,
-  dead-letter recovery, bulk OpenSearch indexing and tenant-scoped searches.
-- 34 behavioral detections: match, threshold, distinct/sum aggregation,
-  ordered sequence, periodicity and numeric baseline deviation.
-- IOC matching, risk factors, rule cooldowns, audited rule versions/exceptions,
-  compromise-chain incident association and evidence-backed entity relations.
-- Alerts, incidents, cases, immutable analyst notes/evidence references,
-  investigation timelines, JSON/CSV export and printable HTML reports.
-- Session authentication, six RBAC roles, scoped API keys, lockout, CSRF,
-  password-reset tokens, tenant isolation and HMAC-linked audit records.
-- Local deterministic analysis plus configured OpenAI/Azure advisory providers.
-  High-impact local policy requests require independent human approval.
-- Live SSE invalidation, operational health and metrics, CLI simulations/replay.
+- Evidence-preserving RFC 5424/3164 Syslog, Linux authentication, web access, Windows JSON event, journald, Docker, and Cloud export parsers.
+- Stable event identities, batched durable acceptance, concurrent worker claiming with `SKIP LOCKED`, dead-letter isolation, and OpenSearch outbox indexing.
+- 34 behavioral detections: match, threshold, distinct/sum aggregation, ordered sequence, periodicity, and numeric baseline deviation.
+- IOC matching, risk factors, rule cooldowns, audited rule versions/exceptions, compromise-chain incident association, and semantic entity relations.
+- Alerts, incidents, cases, immutable analyst notes, investigation timelines, formula-safe CSV export, and printable HTML reports.
+- Session authentication, six RBAC roles, scoped API keys, lockout, CSRF, password-reset tokens, tenant isolation, and HMAC-linked audit records.
+- Automated data lifecycle engine with legal hold exemptions, dry-run previews, and separate maintenance credentials.
+- Endpoint response agent with process termination, live network containment, and cryptographic receipt verification.
 
 ## Quick start: Docker
 

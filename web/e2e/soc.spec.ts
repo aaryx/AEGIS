@@ -4,6 +4,8 @@ test("analyst follows real evidence from dashboard through report", async ({ pag
   const username = process.env.AEGIS_E2E_USERNAME;
   const password = process.env.AEGIS_E2E_PASSWORD;
   if (!username || !password) throw new Error("Set AEGIS_E2E_USERNAME and AEGIS_E2E_PASSWORD after running scripts/e2e_server.py");
+  page.on("console", msg => console.log("PAGE CONSOLE:", msg.type(), msg.text()));
+  page.on("pageerror", err => console.log("PAGE ERROR:", err.message));
   await page.goto("/");
   await page.getByLabel("Username", { exact: true }).fill(username);
   await page.getByLabel("Password", { exact: true }).fill(password);

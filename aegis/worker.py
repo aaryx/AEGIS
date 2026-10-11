@@ -8,7 +8,7 @@ from redis import Redis
 from sqlalchemy import delete, select
 
 from aegis.config import get_settings
-from aegis.db import EventRecord, Organization, SearchJob, WindowState, WorkerHeartbeat, database
+from aegis.db import EventRecord, SearchJob, WindowState, WorkerHeartbeat, database
 from aegis.pipeline import detect_batch
 from aegis.storage import LocalStorage, OpenSearchStorage
 
@@ -71,54 +71,43 @@ def project_once(settings, sessions, storage) -> int:
 def process_once(settings, sessions, storage, redis=None, worker_id="local") -> int:
     processed = 0
     with sessions.begin() as db:
-        org = db.scalar(
-            select(Organization)
-            .where(
-                Organization.id.in_(
-                    select(EventRecord.organization_id).where(
-                        EventRecord.state.in_(["PENDING", "RETRY"]), EventRecord.available_at <= time.time()
-                    )
+        records = list(
+            db.scalars(
+                select(EventRecord)
+                .where(
+                    EventRecord.state.in_(["PENDING", "RETRY"]),
+                    EventRecord.available_at <= time.time(),
                 )
+                .order_by(EventRecord.available_at, EventRecord.timestamp, EventRecord.created_at, EventRecord.id)
+                .with_for_update(skip_locked=True)
+                .limit(settings.worker_batch_size)
             )
-            .order_by(Organization.id)
-            .with_for_update(skip_locked=True)
-            .limit(1)
         )
-        if org:
-            records = list(
-                db.scalars(
-                    select(EventRecord)
-                    .where(
-                        EventRecord.organization_id == org.id,
-                        EventRecord.state.in_(["PENDING", "RETRY"]),
-                        EventRecord.available_at <= time.time(),
-                    )
-                    .order_by(EventRecord.timestamp, EventRecord.created_at, EventRecord.id)
-                    .with_for_update(skip_locked=True)
-                    .limit(settings.worker_batch_size)
-                )
-            )
-            try:
-                with db.begin_nested():
-                    detect_batch(db, settings, records)
-                processed = len(records)
-            except Exception:
-                # A poison event must not exhaust the retries of valid sibling events.
-                # The outer tenant lock remains held while each savepoint is rolled back.
-                for record in records:
-                    try:
-                        with db.begin_nested():
-                            detect_batch(db, settings, [record])
-                        processed += 1
-                    except Exception as exc:
-                        record.attempts += 1
-                        record.state = "DEAD" if record.attempts >= settings.worker_max_attempts else "RETRY"
-                        record.available_at = time.time() + min(300, 2**record.attempts)
-                        record.last_error = type(exc).__name__
-                        logger.error(
-                            "event_processing_failed",
-                            extra={"error_type": type(exc).__name__, "event_count": 1},
-                        )
+        if records:
+            by_org: dict[str, list[EventRecord]] = {}
+            for rec in records:
+                by_org.setdefault(rec.organization_id, []).append(rec)
+            for _org_id, org_records in by_org.items():
+                try:
+                    with db.begin_nested():
+                        detect_batch(db, settings, org_records, redis=redis)
+                    processed += len(org_records)
+                except Exception:
+                    # A poison event must not exhaust the retries of valid sibling events.
+                    for record in org_records:
+                        try:
+                            with db.begin_nested():
+                                detect_batch(db, settings, [record], redis=redis)
+                            processed += 1
+                        except Exception as exc:
+                            record.attempts += 1
+                            record.state = "DEAD" if record.attempts >= settings.worker_max_attempts else "RETRY"
+                            record.available_at = time.time() + min(300, 2**record.attempts)
+                            record.last_error = type(exc).__name__
+                            logger.error(
+                                "event_processing_failed",
+                                extra={"error_type": type(exc).__name__, "event_count": 1},
+                            )
         heartbeat(db, worker_id, processed)
         db.execute(delete(WindowState).where(WindowState.expires < time.time()))
     project_once(settings, sessions, storage)

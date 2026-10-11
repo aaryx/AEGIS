@@ -82,6 +82,7 @@ services:
       <<: *environment
       DATABASE_URL: postgresql+psycopg://aegis:${POSTGRES_PASSWORD:?Run python scripts/configure.py}@postgres:5432/aegis
       POSTGRES_RUNTIME_PASSWORD: ${POSTGRES_RUNTIME_PASSWORD:-${POSTGRES_PASSWORD}}
+      POSTGRES_MAINTENANCE_PASSWORD: ${POSTGRES_MAINTENANCE_PASSWORD:-${POSTGRES_PASSWORD}}
       BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-admin}
       BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:?Run python scripts/configure.py}
       OPENSEARCH_ADMIN_PASSWORD: ${OPENSEARCH_ADMIN_PASSWORD:?Run python scripts/configure.py}
@@ -105,6 +106,19 @@ services:
     healthcheck:
       test: [CMD, python, scripts/worker_health.py]
       interval: 30s
+      timeout: 5s
+      retries: 3
+  retention:
+    <<: *app
+    command: [aegis-retention]
+    environment:
+      <<: *environment
+      DATABASE_URL: postgresql+psycopg://aegis_maintenance:${POSTGRES_MAINTENANCE_PASSWORD:-${POSTGRES_PASSWORD}}@postgres:5432/aegis
+    depends_on:
+      initialize: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -c, "import sys; sys.exit(0)"]
+      interval: 60s
       timeout: 5s
       retries: 3
   cli:

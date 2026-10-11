@@ -63,6 +63,8 @@ def request_bytes(settings, endpoint, method="GET", body=None, headers=None):
         ip = ipaddress.ip_address(address[4][0])
         if ip.is_link_local or ip.is_multicast or ip.is_unspecified:
             raise ValueError("Integration resolved to a prohibited address")
+        if settings.environment != "testing" and (ip.is_loopback or ip.is_private):
+            raise ValueError("Integration resolved to a prohibited loopback or private address")
     if not addresses:
         raise ValueError("Integration host has no addresses")
     timeout = settings.integration_timeout_seconds

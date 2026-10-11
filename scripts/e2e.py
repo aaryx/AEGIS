@@ -15,13 +15,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     env = os.environ | {
+        "PYTHONPATH": str(ROOT),
         "AEGIS_E2E_USERNAME": "e2e-analyst",
         "AEGIS_E2E_PASSWORD": secrets.token_urlsafe(24),
         "AEGIS_WEB_URL": "http://127.0.0.1:3000",
     }
+    standalone_static = ROOT / "web" / ".next" / "standalone" / ".next" / "static"
+    source_static = ROOT / "web" / ".next" / "static"
+    if source_static.exists() and not standalone_static.exists():
+        standalone_static.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source_static, standalone_static, dirs_exist_ok=True)
+    next_bin = (
+        ["node", ".next/standalone/server.js"]
+        if (ROOT / "web" / ".next" / "standalone" / "server.js").exists()
+        else ["node", "node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1"]
+    )
     commands = [
         ([sys.executable, "scripts/e2e_server.py"], ROOT),
-        (["node", "node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1"], ROOT / "web"),
+        (next_bin, ROOT / "web"),
     ]
     processes = [subprocess.Popen(command, cwd=cwd, env=env) for command, cwd in commands]  # noqa: S603  # nosec B603
     try:

@@ -13,6 +13,7 @@ from aegis.db import APIKey, AuditLog, Organization, SessionToken, User, WindowS
 from aegis.parsers import canonical
 
 PASSWORDS = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
+DUMMY_PASSWORD_HASH = PASSWORDS.hash("aegis-dummy-constant-salt-for-timing-mitigation")
 READ = {
     f"{name}.read"
     for name in (

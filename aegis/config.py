@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     response_approval_seconds: int = Field(3600, ge=60, le=86400)
     max_search_days: int = Field(31, ge=1, le=366)
     retention_days: int = Field(90, ge=7)
+    retention_batch_size: int = Field(500, ge=10, le=5000)
+    retention_interval_seconds: int = Field(3600, ge=60)
+    maintenance_database_url: str | None = None
+    opensearch_replicas: int = Field(0, ge=0, le=5)
+    max_entities_per_event: int = Field(15, ge=2, le=50)
     ai_provider: Literal["local", "openai", "azure"] = "local"
     ai_api_key: SecretStr = SecretStr("")
     ai_endpoint: str = "https://api.openai.com/v1/chat/completions"

@@ -171,12 +171,13 @@ class OpenSearchStorage:
                 "process_id": {"type": "long"},
             }
         )
+        replicas = getattr(self.settings, "opensearch_replicas", 0)
         self.client.indices.put_index_template(
             name="aegis-events",
             body={
                 "index_patterns": ["aegis-events-*"],
                 "template": {
-                    "settings": {"number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": "5s"},
+                    "settings": {"number_of_shards": 1, "number_of_replicas": replicas, "refresh_interval": "5s"},
                     "mappings": {"dynamic": False, "properties": properties},
                     "aliases": {"aegis-events": {}},
                 },
@@ -224,8 +225,14 @@ class OpenSearchStorage:
                 case "in":
                     clause = {"terms": {field: value}}
                 case "contains":
-                    escaped = str(value).replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?")
-                    clause = {"wildcard": {field: {"value": f"*{escaped}*", "case_insensitive": True}}}
+                    val_str = str(value)[:200]
+                    if not val_str:
+                        continue
+                    if field == "message":
+                        clause = {"match_phrase": {"message": val_str}}
+                    else:
+                        escaped = val_str.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?")
+                        clause = {"wildcard": {field: {"value": f"*{escaped}*", "case_insensitive": True}}}
                 case "gte" | "lte":
                     clause = {"range": {field: {predicate.op: value}}}
                 case "exists":

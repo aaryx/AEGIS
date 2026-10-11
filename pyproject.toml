@@ -21,6 +21,7 @@ dev = ["pytest==9.0.3", "pytest-cov==7.0.0", "ruff==0.15.6", "mypy==1.19.1", "ty
 [project.scripts]
 aegis = "aegis.cli:app"
 aegis-worker = "aegis.worker:main"
+aegis-retention = "aegis.retention:main"
 
 [tool.setuptools.packages.find]
 include = ["aegis*"]

@@ -42,9 +42,31 @@ def main():
                 connection.execute(
                     "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO aegis_runtime"
                 )
-                connection.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO aegis_runtime")
                 connection.execute("REVOKE UPDATE, DELETE ON audit_logs FROM aegis_runtime")
                 connection.execute("REVOKE DELETE ON events_metadata FROM aegis_runtime")
+
+        maint_password = os.environ.get("POSTGRES_MAINTENANCE_PASSWORD")
+        if maint_password:
+            with psycopg.connect(
+                host=url.host,
+                port=url.port or 5432,
+                dbname=url.database,
+                user=url.username,
+                password=url.password,
+            ) as connection:
+                if not connection.execute(
+                    "SELECT 1 FROM pg_roles WHERE rolname = %s", ("aegis_maintenance",)
+                ).fetchone():
+                    connection.execute("CREATE ROLE aegis_maintenance LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE")
+                connection.execute(
+                    sql.SQL("ALTER ROLE aegis_maintenance PASSWORD {}").format(sql.Literal(maint_password))
+                )
+                connection.execute("GRANT USAGE ON SCHEMA public TO aegis_maintenance")
+                connection.execute(
+                    "GRANT SELECT, DELETE ON ALL TABLES IN SCHEMA public TO aegis_maintenance"
+                )
+                connection.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO aegis_maintenance")
+                connection.execute("REVOKE UPDATE, DELETE ON audit_logs FROM aegis_maintenance")
     _, sessions = database(settings.database_url)
     with sessions.begin() as db:
         if not db.scalar(select(User.id).limit(1)):

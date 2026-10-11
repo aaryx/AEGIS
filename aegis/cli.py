@@ -778,6 +778,19 @@ def agent_status(ctx: typer.Context):
     output(ctx, agent.get_system_info())
 
 
+maintenance_app = typer.Typer(no_args_is_help=True, help="Data lifecycle and maintenance operations")
+app.add_typer(maintenance_app, name="maintenance")
+
+
+@maintenance_app.command("retention")
+def run_retention_cli(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report eligible records without deleting"),
+):
+    """Run data lifecycle retention cleanup across security events and transient state."""
+    output(ctx, call(ctx, "POST", "system/retention", params={"dry_run": dry_run}))
+
+
 if __name__ == "__main__":
     app()
 
