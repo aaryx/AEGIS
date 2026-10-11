@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(args, **kwargs):
-    return subprocess.run([shutil.which("docker"), "compose", *args], cwd=ROOT, check=True, **kwargs)  # noqa: S603  # nosec B603
+    docker = shutil.which("docker") or "docker"
+    return subprocess.run([docker, "compose", *args], cwd=ROOT, check=True, **kwargs)  # noqa: S603  # nosec B603
 
 
 def main():

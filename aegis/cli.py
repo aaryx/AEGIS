@@ -760,7 +760,7 @@ def run_agent(
             agent.run_forever(interval=interval)
     except Exception as exc:
         console.print(f"[bold red]Agent execution error:[/bold red] {exc}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from exc
 
 
 @agent_app.command("list")

@@ -4,6 +4,7 @@ import json
 import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -15,13 +16,13 @@ from aegis.integrations import dispatch_once, request_bytes
 @contextmanager
 def receiver():
     requests = []
-    state = {"status": 200, "body": b"[]"}
+    state: dict[str, Any] = {"status": 200, "body": b"[]"}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            self.send_response(state["status"])
+            self.send_response(int(state["status"]))
             self.end_headers()
-            self.wfile.write(state["body"])
+            self.wfile.write(bytes(state["body"]))
 
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))

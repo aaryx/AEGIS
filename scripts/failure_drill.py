@@ -11,7 +11,8 @@ from dotenv import dotenv_values
 
 
 def docker(*args):
-    subprocess.run([shutil.which("docker"), "compose", *args], check=True)  # noqa: S603  # nosec B603
+    exe = shutil.which("docker") or "docker"
+    subprocess.run([exe, "compose", *args], check=True)  # noqa: S603  # nosec B603
 
 
 def main():

@@ -44,6 +44,7 @@ def main():
             time.sleep(2)
         else:
             raise RuntimeError("Attack-chain incident was not generated")
+        assert incident is not None
         if not evidence or len(evidence["evidence"]) != 16 or not evidence["iocs"] or not evidence["entities"]:
             raise RuntimeError("Investigation evidence is incomplete")
         for _ in range(10):

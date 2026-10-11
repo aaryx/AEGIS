@@ -15,9 +15,11 @@ env = os.environ | {
     "AEGIS_WEB_URL": "http://localhost:3000",
     "AEGIS_DISTRIBUTED_E2E": "1",
 }
+node = shutil.which("node") or "node"
+env_map: dict[str, str] = {k: v for k, v in env.items() if v is not None}
 subprocess.run(  # noqa: S603  # nosec B603
-    [shutil.which("node"), "node_modules/@playwright/test/cli.js", "test"],
+    [node, "node_modules/@playwright/test/cli.js", "test"],
     cwd=root / "web",
-    env=env,
+    env=env_map,
     check=True,
 )  # noqa: S603  # nosec B603

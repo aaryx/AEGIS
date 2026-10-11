@@ -82,7 +82,8 @@ def test_threshold_boundary_window_and_exceptions():
         state = SQLState(db)
         for index in range(9):
             assert evaluate(rule, event(index), state, "test") is None
-        assert evaluate(rule, event(9), state, "test")["measured"] == 10
+        res = evaluate(rule, event(9), state, "test")
+        assert res is not None and res["measured"] == 10
         assert evaluate(rule, event(10, 500), state, "test") is None
         rule.exceptions = [
             ExceptionRule(

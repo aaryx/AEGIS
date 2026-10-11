@@ -34,8 +34,9 @@ def main():
                     time.sleep(1)
             else:
                 raise RuntimeError("Acceptance service did not become healthy")
+        node = shutil.which("node") or "node"
         subprocess.run(  # noqa: S603  # nosec B603
-            [shutil.which("node"), "node_modules/@playwright/test/cli.js", "test"],
+            [node, "node_modules/@playwright/test/cli.js", "test"],
             cwd=ROOT / "web",
             env=env,
             check=True,
