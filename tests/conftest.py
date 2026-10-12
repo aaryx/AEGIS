@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -7,6 +9,12 @@ from aegis.db import Organization, User
 from aegis.pipeline import seed_rules
 from aegis.security import PASSWORDS, issue_session
 from aegis.worker import process_once
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    basetemp = config.getoption("basetemp", None)
+    if basetemp:
+        Path(basetemp).mkdir(parents=True, exist_ok=True)
 
 
 @pytest.fixture

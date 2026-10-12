@@ -65,7 +65,7 @@ def main():
             run([sys.executable, "-m", "mypy", "aegis"])
             run([NPM, "run", "typecheck"], ROOT / "web")
         case "security":
-            run([sys.executable, "-m", "bandit", "-r", "aegis", "scripts", "-q"])
+            run([sys.executable, "-m", "bandit", "-r", "aegis", "scripts", "-ll", "-q"])
             run([sys.executable, "-m", "pip_audit", "--skip-editable"])
             run([NPM, "audit"], ROOT / "web")
         case "build":

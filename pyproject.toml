@@ -29,7 +29,7 @@ include = ["aegis*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["integration: requires PostgreSQL, Redis and OpenSearch"]
-addopts = "--basetemp=.pytest_cache/tmp"
+addopts = "--basetemp=.pytest_temp"
 
 [tool.ruff]
 target-version = "py312"
