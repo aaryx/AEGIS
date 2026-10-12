@@ -1,21 +1,74 @@
+# Environment and credentials
 .env
-.venv/
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+
+# Python
 __pycache__/
-*.py[cod]
-*.db
-*.db-*
+*.py[codz]
+*$py.class
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Testing and linters
 .pytest_cache/
+.pytest_temp/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
-*.egg-info/
-node_modules/
-.next/
 test-results/
 playwright-report/
-dist/
-build/
+
+# Node.js and Next.js
+node_modules/
+.next/
+out/
 *.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Databases, local runtime state, and logs
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
 local-data/
-.pytest_temp/
+*.log
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
