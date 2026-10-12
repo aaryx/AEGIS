@@ -66,7 +66,7 @@ OpenSearch serves as an indexed projection of primary telemetry stored durably i
 # 1. Register S3 or shared filesystem snapshot repository
 curl -X PUT "http://localhost:9200/_snapshot/aegis_backup" \
   -H "Content-Type: application/json" \
-  -u "admin:<OPENSEARCH_ADMIN_PASSWORD>" \
+  --user "admin:<OPENSEARCH_ADMIN_PASSWORD>" \
   -d '{
     "type": "fs",
     "settings": {
@@ -76,7 +76,7 @@ curl -X PUT "http://localhost:9200/_snapshot/aegis_backup" \
 
 # 2. Create daily snapshot
 curl -X PUT "http://localhost:9200/_snapshot/aegis_backup/snapshot_$(date +%Y%m%d)?wait_for_completion=true" \
-  -u "admin:<OPENSEARCH_ADMIN_PASSWORD>"
+  --user "admin:<OPENSEARCH_ADMIN_PASSWORD>"
 ```
 
 ### 3.2 Recovery via Outbox Re-projection

@@ -1,0 +1,16 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist false positives for tests, documentation, and compose healthcheck"
+paths = [
+    '''tests/.*''',
+    '''docs/.*''',
+    '''compose\.yaml''',
+]
+regexes = [
+    '''Idempotency-Key''',
+    '''Ed25519PrivateKey''',
+    '''curl.*--user''',
+    '''curl.*-u''',
+]

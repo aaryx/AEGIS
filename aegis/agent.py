@@ -57,7 +57,7 @@ class EndpointAgent:
         token: str = "",
         controller_ip: str = "127.0.0.1",
         simulation_mode: bool = True,
-        private_key: Ed25519PrivateKey | None = None,
+        signing_key: Ed25519PrivateKey | None = None,
         key_path: str | None = None,
         controller_public_key: str | None = None,
     ) -> None:
@@ -74,8 +74,8 @@ class EndpointAgent:
         self._seen_nonces: set[str] = set()
 
         # Initialize or load Ed25519 private key
-        if private_key is not None:
-            self.private_key = private_key
+        if signing_key is not None:
+            self.private_key = signing_key
         elif key_path and os.path.exists(key_path):
             self.private_key = load_private_key(key_path)
         else:

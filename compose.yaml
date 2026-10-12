@@ -70,7 +70,7 @@ services:
     volumes: [opensearch-data:/usr/share/opensearch/data]
     networks: [backend]
     healthcheck:
-      test: [CMD-SHELL, 'curl -fsS -u "admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD" http://localhost:9200/_cluster/health >/dev/null']
+      test: [CMD-SHELL, 'curl -fsS --user "admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD" http://localhost:9200/_cluster/health >/dev/null']
       interval: 15s
       timeout: 10s
       retries: 20

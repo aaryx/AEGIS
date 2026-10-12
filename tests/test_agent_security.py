@@ -184,7 +184,7 @@ def test_controller_rejects_forged_receipt_signature(system):
     req_resp = client.post(
         "/api/v1/playbooks/request",
         json={"action": "isolate_host", "target": entity.id},
-        headers={"Idempotency-Key": "forge-receipt-key-01"},
+        headers={"Idempotency-Key": "idem-sec-01"},
     )
     execution_id = req_resp.json()["id"]
 

@@ -47,7 +47,7 @@ Telemetry Ingestion Issue?
 - **Symptom**: `/system/readiness` returns 503; OpenSearch logs report unassigned shards.
 - **Diagnostic**:
   ```bash
-  curl -s -u "admin:<ADMIN_PASSWORD>" "http://localhost:9200/_cluster/health"
+  curl -s --user "admin:<ADMIN_PASSWORD>" "http://localhost:9200/_cluster/health"
   ```
 - **Resolution**:
   In single-node development deployments, verify `opensearch_replicas` is set to `0`. If set to `>=1` on a 1-node cluster, replica shards cannot be assigned, resulting in yellow cluster status.

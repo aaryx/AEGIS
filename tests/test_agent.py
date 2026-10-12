@@ -66,7 +66,7 @@ def test_agent_api_registration_and_containment_lifecycle(system):
     req_resp = client.post(
         "/api/v1/playbooks/request",
         json={"action": "isolate_host", "target": entity.id},
-        headers={"Idempotency-Key": "isolate-web01-key"},
+        headers={"Idempotency-Key": "idem-iso-1"},
     )
     assert req_resp.status_code == 200, req_resp.text
     execution_id = req_resp.json()["id"]
@@ -108,7 +108,7 @@ def test_agent_api_registration_and_containment_lifecycle(system):
     uniso_req = client.post(
         "/api/v1/playbooks/request",
         json={"action": "unisolate_host", "target": entity.id},
-        headers={"Idempotency-Key": "unisolate-web01-key"},
+        headers={"Idempotency-Key": "idem-uniso-1"},
     )
     assert uniso_req.status_code == 200
     uniso_id = uniso_req.json()["id"]
