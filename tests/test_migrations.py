@@ -13,11 +13,16 @@ def test_clean_install_and_repeated_migration(tmp_path, monkeypatch):
         command.upgrade(Config("alembic.ini"), "head")
         command.upgrade(Config("alembic.ini"), "head")
         engine = create_engine(url)
-        assert {"search_jobs", "integrations", "notification_deliveries"} <= set(
-            inspect(engine).get_table_names()
-        )
+        assert {
+            "search_jobs",
+            "integrations",
+            "notification_deliveries",
+            "agents",
+            "agent_enrollment_tokens",
+            "audit_heads",
+        } <= set(inspect(engine).get_table_names())
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0004"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0005"
         engine.dispose()
     finally:
         get_settings.cache_clear()

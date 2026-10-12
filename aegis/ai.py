@@ -1,5 +1,5 @@
 import json
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import httpx
 from pydantic import Field
@@ -20,6 +20,7 @@ class Analysis(StrictModel):
     recommended_steps: list[str] = Field(max_length=10)
     suggested_queries: list[SearchQuery] = Field(default_factory=list, max_length=5)
     limitations: list[str] = Field(default_factory=list, max_length=10)
+    provenance: dict[str, Any] = Field(default_factory=dict)
 
 
 class AIProvider(Protocol):
@@ -257,13 +258,17 @@ class OpenAIProvider:
         ids = {event["event_id"] for event in evidence["events"]}
         for claim in result.claims:
             if not set(claim.event_ids) <= ids:
-                raise ValueError("AI cited unsupported evidence")
+                raise ValueError("AI cited unsupported evidence: references non-existent or cross-tenant event IDs")
             if claim.category == "Observed" and not claim.event_ids:
-                raise ValueError("Observed AI claim lacks evidence")
+                raise ValueError("Observed AI claim lacks required evidence citations")
         result.provider = self.settings.ai_provider
         result.generated = True
+        result.provenance = {
+            "supplied_event_count": len(ids),
+            "evidence_event_ids": sorted(list(ids)),
+        }
         result.limitations.append(
-            "Citations are validated; natural-language claims still require analyst verification."
+            "Citations are validated against supplied evidence; a valid citation proves referencing but does not independently prove the semantic truth of natural-language statements."
         )
         return result
 

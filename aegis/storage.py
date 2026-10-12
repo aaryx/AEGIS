@@ -2,7 +2,7 @@ import base64
 import json
 import math
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Any, Protocol
 
 from opensearchpy import OpenSearch, helpers
 from sqlalchemy import select
@@ -205,13 +205,15 @@ class OpenSearchStorage:
         status = self.client.cluster.health(request_timeout=3)["status"]
         return "DOWN" if status == "red" else "HEALTHY"
 
-    def search(self, organization_id, query):
-        filters = [
+    def build_body(self, organization_id: str, query: SearchQuery) -> dict:
+        filters: list[dict[str, Any]] = [
             {"term": {"organization_id": organization_id}},
             {"range": {"timestamp": {"gte": query.start.isoformat(), "lte": query.end.isoformat()}}},
         ]
+        wildcard_indexed_fields = {"command_line", "http.path", "http.user_agent", "file.path"}
         for predicate in query.filters:
             field, value = predicate.field, predicate.value
+            clause: dict[str, Any]
             match predicate.op:
                 case "eq":
                     clause = {"term": {field: value}}
@@ -228,8 +230,11 @@ class OpenSearchStorage:
                     val_str = str(value)[:200]
                     if not val_str:
                         continue
-                    if field == "message":
-                        clause = {"match_phrase": {"message": val_str}}
+                    if field in {"message", "raw_event"}:
+                        clause = {"match_phrase": {field: val_str}}
+                    elif field in wildcard_indexed_fields:
+                        escaped = val_str.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?")
+                        clause = {"wildcard": {field: {"value": f"*{escaped}*", "case_insensitive": True}}}
                     else:
                         escaped = val_str.replace("\\", "\\\\").replace("*", "\\*").replace("?", "\\?")
                         clause = {"wildcard": {field: {"value": f"*{escaped}*", "case_insensitive": True}}}
@@ -251,13 +256,17 @@ class OpenSearchStorage:
             },
             "size": query.limit + 1,
             "sort": [{"timestamp": query.sort}, {"event_id": query.sort}],
-            "track_total_hits": True,
+            "track_total_hits": min(query.limit * 10, 10000),
             "timeout": "5s",
         }
         if query.cursor:
             body["search_after"] = decode_cursor(query.cursor)
         if query.aggregate:
-            body["aggs"] = {"values": {"terms": {"field": query.aggregate, "size": 50}}}
+            body["aggs"] = {"values": {"terms": {"field": query.aggregate, "size": min(50, query.limit)}}}
+        return body
+
+    def search(self, organization_id, query):
+        body = self.build_body(organization_id, query)
         dates = []
         current = query.start.astimezone(UTC).date()
         while current <= query.end.astimezone(UTC).date():

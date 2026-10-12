@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     opensearch_password: SecretStr = SecretStr("")
     opensearch_ca: str | None = None
     audit_secret: SecretStr = SecretStr("")
+    audit_key_version: int = Field(1, ge=1)
+    controller_signing_key: SecretStr = SecretStr("")
     cookie_secure: bool = False
     public_origin: str = "http://localhost:3000"
     session_hours: int = Field(8, ge=1, le=24)

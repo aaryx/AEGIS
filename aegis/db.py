@@ -38,6 +38,8 @@ class User(Owned, Base):
     active: Mapped[bool] = mapped_column(default=True)
     failed_logins: Mapped[int] = mapped_column(default=0)
     locked_until: Mapped[float] = mapped_column(default=0.0)
+    mfa_enabled: Mapped[bool] = mapped_column(default=False)
+    mfa_secret: Mapped[str | None] = mapped_column(String(64), default=None)
 
 
 class SessionToken(Owned, Base):
@@ -264,6 +266,50 @@ class AuditLog(Owned, Base):
     details: Mapped[dict] = mapped_column(JSON)
     previous_hash: Mapped[str] = mapped_column(String(64))
     entry_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    key_version: Mapped[int] = mapped_column(default=1)
+
+
+class AuditHead(Base):
+    __tablename__ = "audit_heads"
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), primary_key=True)
+    audit_head: Mapped[str] = mapped_column(String(64), default="0" * 64)
+    sequence_number: Mapped[int] = mapped_column(default=0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class AuditCheckpoint(Owned, Base):
+    __tablename__ = "audit_checkpoints"
+    sequence_number: Mapped[int] = mapped_column(index=True)
+    head_entry_hash: Mapped[str] = mapped_column(String(64))
+    checkpoint_hash: Mapped[str] = mapped_column(String(64))
+    signature: Mapped[str] = mapped_column(String(256))
+    key_version: Mapped[int] = mapped_column(default=1)
+
+
+class Agent(Owned, Base):
+    __tablename__ = "agents"
+    name: Mapped[str] = mapped_column(String(200), index=True)
+    public_key: Mapped[str] = mapped_column(String(128))  # Ed25519 public key in hex
+    status: Mapped[str] = mapped_column(String(30), default="ENROLLED")  # ENROLLED, REVOKED, PENDING
+    os: Mapped[str] = mapped_column(String(50), default="unknown")
+    os_release: Mapped[str] = mapped_column(String(50), default="")
+    ip: Mapped[str] = mapped_column(String(50), default="127.0.0.1")
+    version: Mapped[str] = mapped_column(String(30), default="1.0.0")
+    capabilities: Mapped[list] = mapped_column(JSON, default=list)
+    isolation_status: Mapped[str] = mapped_column(String(30), default="NONE")
+    last_heartbeat: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    auth_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, default=None)
+    __table_args__ = (UniqueConstraint("organization_id", "name"),)
+
+
+class AgentEnrollmentToken(Owned, Base):
+    __tablename__ = "agent_enrollment_tokens"
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[float] = mapped_column(index=True)
+    used: Mapped[bool] = mapped_column(default=False)
+    used_by_agent_id: Mapped[str | None] = mapped_column(String(80), default=None)
 
 
 class WindowState(Base):

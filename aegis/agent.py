@@ -1,7 +1,13 @@
 """AEGIS Endpoint Containment & Execution Agent.
 
 Provides active host isolation, process termination, and policy verification
-with cryptographically signed HMAC execution receipts.
+with per-endpoint Ed25519 asymmetric cryptography, controller-signed command authentication,
+and cryptographically signed execution receipts.
+
+SECURITY NOTICE:
+A valid cryptographic signature proves possession of the relevant endpoint private key.
+It does not independently prove that a compromised endpoint actually performed the claimed
+operating system operation. Physical and root compromises must be factored into host trust models.
 """
 
 from __future__ import annotations
@@ -10,6 +16,7 @@ import hashlib
 import logging
 import os
 import platform
+import secrets
 import signal
 import socket
 import subprocess
@@ -19,8 +26,16 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from aegis import __version__
+from aegis.crypto import (
+    ed25519_sign_canonical,
+    ed25519_verify_canonical,
+    generate_ed25519_keypair,
+    load_private_key,
+    save_private_key,
+)
 from aegis.parsers import canonical
 
 logger = logging.getLogger("aegis.agent")
@@ -30,8 +45,9 @@ class EndpointAgent:
     """Active endpoint agent for AEGIS SIEM/SOAR.
 
     Monitors host health, periodically heartbeats host posture,
-    polls approved containment playbooks, executes network isolation or
-    process termination, and submits cryptographically signed execution proofs.
+    polls approved containment playbooks, verifies controller-signed command envelopes,
+    executes network isolation or process termination, and submits cryptographically signed
+    Ed25519 execution receipts.
     """
 
     def __init__(
@@ -41,6 +57,9 @@ class EndpointAgent:
         token: str = "",
         controller_ip: str = "127.0.0.1",
         simulation_mode: bool = True,
+        private_key: Ed25519PrivateKey | None = None,
+        key_path: str | None = None,
+        controller_public_key: str | None = None,
     ) -> None:
         self.name = name or socket.gethostname()
         self.server_url = server_url.rstrip("/")
@@ -49,6 +68,22 @@ class EndpointAgent:
         self.simulation_mode = simulation_mode
         self.isolated = False
         self.active_firewall_rules: list[str] = []
+        self.key_path = key_path
+        self.agent_id: str | None = None
+        self.controller_public_key = controller_public_key
+        self._seen_nonces: set[str] = set()
+
+        # Initialize or load Ed25519 private key
+        if private_key is not None:
+            self.private_key = private_key
+        elif key_path and os.path.exists(key_path):
+            self.private_key = load_private_key(key_path)
+        else:
+            self.private_key, _ = generate_ed25519_keypair()
+            if key_path:
+                save_private_key(self.private_key, key_path)
+
+        self.public_key_hex = self.private_key.public_key().public_bytes_raw().hex()
 
     def headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -74,6 +109,7 @@ class EndpointAgent:
             "status": "ONLINE",
             "isolation_status": "ISOLATED" if self.isolated else "NONE",
             "capabilities": ["isolate_host", "unisolate_host", "terminate_process"],
+            "public_key": self.public_key_hex,
         }
 
     def _request(
@@ -97,6 +133,40 @@ class EndpointAgent:
             resp.raise_for_status()
             return resp.json()
 
+    def enroll(self, enrollment_token: str, client: Any = None) -> dict[str, Any]:
+        """Enrolls this endpoint with the controller using a single-use expiring enrollment token."""
+        payload = {
+            "name": self.name,
+            "enrollment_token": enrollment_token,
+            "public_key": self.public_key_hex,
+            "system_info": self.get_system_info(),
+        }
+        res: dict[str, Any] = self._request("POST", "agents/enroll", payload, client=client)
+        self.agent_id = res.get("agent_id")
+        self.token = res.get("auth_token", "")
+        self.controller_public_key = res.get("controller_public_key")
+        logger.info("Agent %s successfully enrolled (agent_id=%s)", self.name, self.agent_id)
+        return res
+
+    def rotate_key(self, client: Any = None) -> dict[str, Any]:
+        """Rotates the endpoint's Ed25519 keypair and registers the new public key."""
+        new_private, new_public_hex = generate_ed25519_keypair()
+        rotation_msg = {"name": self.name, "new_public_key": new_public_hex, "timestamp": time.time()}
+        sig = ed25519_sign_canonical(self.private_key, rotation_msg)
+        payload = {
+            "new_public_key": new_public_hex,
+            "rotation_signature": sig,
+        }
+        res: dict[str, Any] = self._request(
+            "POST", f"agents/{self.name}/rotate-key", payload, client=client
+        )
+        self.private_key = new_private
+        self.public_key_hex = new_public_hex
+        if self.key_path:
+            save_private_key(self.private_key, self.key_path)
+        logger.info("Agent %s rotated cryptographic keypair to %s", self.name, new_public_hex[:16])
+        return res
+
     def heartbeat(self, client: Any = None) -> dict[str, Any]:
         """Registers agent posture and telemetry with AEGIS controller."""
         payload = self.get_system_info()
@@ -104,12 +174,61 @@ class EndpointAgent:
         logger.info("Heartbeat sent for %s (isolated=%s)", self.name, self.isolated)
         return result
 
+    def verify_command(self, cmd: dict[str, Any]) -> bool:
+        """Verifies controller signature, expiry, replay, and scoping on a command."""
+        envelope = cmd.get("envelope")
+        sig = cmd.get("controller_signature")
+        ctrl_pubkey = cmd.get("controller_public_key") or self.controller_public_key
+
+        if not envelope or not sig or not ctrl_pubkey:
+            # Reject unsigned commands
+            logger.warning("Rejecting command %s: missing cryptographic envelope or signature", cmd.get("id"))
+            return False
+
+        # 1. Verify Ed25519 controller signature
+        if not ed25519_verify_canonical(ctrl_pubkey, sig, envelope):
+            logger.warning("Rejecting command %s: invalid controller signature", cmd.get("id"))
+            return False
+
+        # 2. Verify target agent scoping
+        target_agent = envelope.get("agent_id")
+        if target_agent and self.agent_id and target_agent != self.agent_id and target_agent != self.name:
+            logger.warning(
+                "Rejecting command %s: target agent %s does not match self (%s)",
+                cmd.get("id"),
+                target_agent,
+                self.agent_id,
+            )
+            return False
+
+        # 3. Verify timestamp and expiration
+        now_ts = time.time()
+        expires_at = envelope.get("expires_at", 0)
+        if expires_at < now_ts:
+            logger.warning("Rejecting command %s: command expired at %s (now=%s)", cmd.get("id"), expires_at, now_ts)
+            return False
+
+        # 4. Anti-replay verification: nonce must be unique
+        nonce = envelope.get("nonce")
+        if not nonce or nonce in self._seen_nonces:
+            logger.warning("Rejecting command %s: replayed or missing nonce %s", cmd.get("id"), nonce)
+            return False
+
+        self._seen_nonces.add(nonce)
+        return True
+
     def poll_commands(self, client: Any = None) -> list[dict[str, Any]]:
-        """Queries for approved containment playbooks targeting this host."""
+        """Queries for approved containment playbooks targeting this host and verifies controller signatures."""
         commands: list[dict[str, Any]] = self._request(
             "GET", f"agents/{self.name}/commands", client=client
         )
-        return commands
+        verified: list[dict[str, Any]] = []
+        for cmd in commands:
+            if self.verify_command(cmd):
+                verified.append(cmd)
+            else:
+                logger.error("Command %s rejected by agent signature and security verification", cmd.get("id"))
+        return verified
 
     def isolate_host(self, controller_ip: str | None = None) -> dict[str, Any]:
         """Applies host network containment, blocking external traffic while allowing AEGIS controller."""
@@ -137,7 +256,6 @@ class EndpointAgent:
         rules_applied = []
         try:
             if sys.platform == "win32":
-                # Windows Defender Firewall via netsh
                 subprocess.run(
                     [
                         "netsh",
@@ -170,7 +288,6 @@ class EndpointAgent:
                 )
                 rules_applied.append(f"{rule_prefix}_CTRL")
             else:
-                # Linux iptables host containment
                 subprocess.run(
                     ["iptables", "-A", "OUTPUT", "-d", target_controller, "-j", "ACCEPT"],
                     check=True,
@@ -305,15 +422,19 @@ class EndpointAgent:
         command_id: str,
         action: str,
         status: str,
+        receipt: dict[str, Any],
+        signature: str,
         receipt_hash: str,
         details: dict[str, Any],
         client: Any = None,
     ) -> dict[str, Any]:
-        """Submits cryptographic execution receipt to AEGIS controller."""
+        """Submits cryptographically signed Ed25519 execution receipt to AEGIS controller."""
         payload = {
             "command_id": command_id,
             "action": action,
             "status": status,
+            "receipt": receipt,
+            "signature": signature,
             "receipt_hash": receipt_hash,
             "details": details,
         }
@@ -323,10 +444,13 @@ class EndpointAgent:
         return result
 
     def execute_command(self, command: dict[str, Any], client: Any = None) -> dict[str, Any]:
-        """Executes a single command from queue and signs cryptographic receipt."""
+        """Executes a single command from queue and produces an Ed25519 signed execution receipt."""
         cmd_id = str(command["id"])
         action = str(command["action"])
         params = command.get("params") or {}
+        envelope = command.get("envelope") or {}
+        ctrl_sig = command.get("controller_signature", "")
+        org_id = envelope.get("organization_id", "")
 
         try:
             if action == "isolate_host":
@@ -339,26 +463,42 @@ class EndpointAgent:
                 raise ValueError(f"Unsupported endpoint containment action: {action}")
 
             receipt_payload = {
+                "version": "1.0",
                 "command_id": cmd_id,
-                "agent": self.name,
+                "agent_id": self.agent_id or self.name,
+                "organization_id": org_id,
                 "action": action,
                 "status": "SUCCESS",
                 "result": result,
+                "command_signature": ctrl_sig,
+                "timestamp": time.time(),
+                "nonce": secrets.token_hex(16),
             }
+            sig = ed25519_sign_canonical(self.private_key, receipt_payload)
             receipt_hash = hashlib.sha256(canonical(receipt_payload).encode()).hexdigest()
-            return self.submit_receipt(cmd_id, action, "SUCCESS", receipt_hash, result, client=client)
+            return self.submit_receipt(
+                cmd_id, action, "SUCCESS", receipt_payload, sig, receipt_hash, result, client=client
+            )
 
         except Exception as exc:
             error_details = {"error": str(exc)}
             receipt_payload = {
+                "version": "1.0",
                 "command_id": cmd_id,
-                "agent": self.name,
+                "agent_id": self.agent_id or self.name,
+                "organization_id": org_id,
                 "action": action,
                 "status": "FAILED",
                 "result": error_details,
+                "command_signature": ctrl_sig,
+                "timestamp": time.time(),
+                "nonce": secrets.token_hex(16),
             }
+            sig = ed25519_sign_canonical(self.private_key, receipt_payload)
             receipt_hash = hashlib.sha256(canonical(receipt_payload).encode()).hexdigest()
-            return self.submit_receipt(cmd_id, action, "FAILED", receipt_hash, error_details, client=client)
+            return self.submit_receipt(
+                cmd_id, action, "FAILED", receipt_payload, sig, receipt_hash, error_details, client=client
+            )
 
     def run_cycle(self, client: Any = None) -> dict[str, Any]:
         """Runs a single poll and execution cycle."""

@@ -23,8 +23,19 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from aegis import __version__
 from aegis.ai import analyze_with_fallback, provider
 from aegis.config import Settings, get_settings
+from aegis.crypto import (
+    ed25519_sign_canonical,
+    ed25519_verify_canonical,
+    generate_totp_secret,
+    get_controller_public_key_hex,
+    get_controller_signing_key,
+    get_totp_uri,
+    verify_totp,
+)
 from aegis.db import (
     IOC,
+    Agent,
+    AgentEnrollmentToken,
     Alert,
     APIKey,
     AuditLog,
@@ -51,6 +62,7 @@ from aegis.db import (
     WorkerHeartbeat,
     as_dict,
     database,
+    now,
     uid,
 )
 from aegis.detection import SQLState, evaluate
@@ -61,13 +73,17 @@ from aegis.pipeline import ingest
 from aegis.response import execute, request_execution
 from aegis.rules import MITRE
 from aegis.schemas import (
+    AgentEnrollInput,
     AgentHeartbeatInput,
+    AgentKeyRotateInput,
     AgentReceiptInput,
+    AgentRevokeInput,
     DetectionRule,
     EventInput,
     IncidentInput,
     IOCInput,
     Login,
+    MFAVerifyInput,
     NoteInput,
     ResponseInput,
     RoleName,
@@ -301,7 +317,9 @@ def create_app(settings: Settings | None = None):
             response = await call_next(request)
         except Exception as exc:
             logger.error(
-                "request_failed",
+                "request_failed: %s",
+                exc,
+                exc_info=True,
                 extra={"request_id": request.state.request_id, "error_type": type(exc).__name__},
             )
             response = JSONResponse(
@@ -485,6 +503,22 @@ def create_app(settings: Settings | None = None):
                 )
                 db.commit()
             raise HTTPException(401, "Invalid credentials or account temporarily locked")
+
+        # Multi-factor authentication verification if enabled for user
+        if user.mfa_enabled:
+            if not data.mfa_code:
+                return {
+                    "mfa_required": True,
+                    "user_id": user.id,
+                    "message": "Multi-factor authentication code required",
+                }
+            if not user.mfa_secret or not verify_totp(user.mfa_secret, data.mfa_code):
+                user.failed_logins += 1
+                if user.failed_logins >= 5:
+                    user.locked_until = time.time() + 900
+                db.commit()
+                raise HTTPException(401, "Invalid MFA authentication code")
+
         user.failed_logins, user.locked_until = 0, 0
         token, csrf = issue_session(db, user, settings)
         audit(db, settings, user.organization_id, user.id, "auth.login", request=request)
@@ -514,6 +548,45 @@ def create_app(settings: Settings | None = None):
             "user": {"id": user.id, "username": user.username, "role": user.role},
             "expires_in": settings.session_hours * 3600,
         }
+
+    @app.post(PREFIX + "/auth/mfa/setup", tags=["auth"])
+    def mfa_setup(
+        principal=Depends(authenticate),
+        db=Depends(db_session),
+    ):
+        secret = generate_totp_secret()
+        user = db.get(User, principal.user.id)
+        if not user:
+            raise HTTPException(404, "User not found")
+        user.mfa_secret = secret
+        db.commit()
+        uri = get_totp_uri(secret, user.username)
+        return {"secret": secret, "otpauth_uri": uri}
+
+    @app.post(PREFIX + "/auth/mfa/verify", tags=["auth"])
+    def mfa_verify(
+        data: MFAVerifyInput,
+        request: Request,
+        principal=Depends(authenticate),
+        db=Depends(db_session),
+    ):
+        user = db.get(User, principal.user.id)
+        if not user or not user.mfa_secret:
+            raise HTTPException(400, "MFA setup has not been initiated for this account")
+        if not verify_totp(user.mfa_secret, data.code):
+            raise HTTPException(400, "Invalid MFA verification code")
+        user.mfa_enabled = True
+        audit(
+            db,
+            settings,
+            principal.organization_id,
+            user.id,
+            "auth.mfa_enabled",
+            user.id,
+            request=request,
+        )
+        db.commit()
+        return {"status": "ok", "mfa_enabled": True}
 
     @app.get(PREFIX + "/auth/me", tags=["auth"])
     def me(principal=Depends(authenticate)):
@@ -1332,6 +1405,232 @@ def create_app(settings: Settings | None = None):
         db.commit()
         return as_dict(result)
 
+    @app.post(PREFIX + "/agents/enrollment-tokens", tags=["agents"])
+    def create_enrollment_token(
+        request: Request,
+        principal=Depends(require("users.manage")),
+        db=Depends(db_session),
+    ):
+        raw_token = "aegis_enroll_" + secrets.token_urlsafe(32)
+        expires_at = time.time() + 86400  # 24 hours single-use token
+        token_record = AgentEnrollmentToken(
+            id=uid(),
+            organization_id=principal.organization_id,
+            created_at=now(),
+            token_hash=token_hash(raw_token),
+            expires_at=expires_at,
+            used=False,
+        )
+        db.add(token_record)
+        audit(
+            db,
+            settings,
+            principal.organization_id,
+            principal.user.id,
+            "agents.enrollment_token.create",
+            token_record.id,
+            details={"expires_at": expires_at},
+            request=request,
+        )
+        db.commit()
+        return {"status": "ok", "token": raw_token, "enrollment_token": raw_token, "expires_at": expires_at}
+
+    @app.post(PREFIX + "/agents/enroll", tags=["agents"])
+    def enroll_agent(
+        data: AgentEnrollInput,
+        request: Request,
+        db=Depends(db_session),
+    ):
+        rate_limit(request, f"enroll:{data.name}", 10)
+        token_record = db.scalar(
+            select(AgentEnrollmentToken)
+            .where(
+                AgentEnrollmentToken.token_hash == token_hash(data.enrollment_token),
+                AgentEnrollmentToken.used.is_(False),
+                AgentEnrollmentToken.expires_at > time.time(),
+            )
+            .with_for_update()
+        )
+        if not token_record:
+            raise HTTPException(403, "Invalid, expired, or already-used enrollment token")
+
+        org_id = token_record.organization_id
+        agent = db.scalar(
+            select(Agent)
+            .where(
+                Agent.organization_id == org_id,
+                Agent.name == data.name,
+            )
+            .with_for_update()
+        )
+        if agent and agent.status == "REVOKED":
+            raise HTTPException(403, "Agent identity is revoked. Re-enrollment prohibited without admin re-activation.")
+
+        # Burn single-use enrollment token
+        token_record.used = True
+
+        raw_auth_token = "aegis_agt_" + secrets.token_urlsafe(32)
+        auth_hash = token_hash(raw_auth_token)
+
+        if not agent:
+            agent = Agent(
+                id="AGT-" + uid(),
+                organization_id=org_id,
+                name=data.name,
+                public_key=data.public_key,
+                status="ENROLLED",
+                os=data.system_info.get("os", "unknown"),
+                os_release=data.system_info.get("os_release", ""),
+                ip=data.system_info.get("ip", "127.0.0.1"),
+                version=data.system_info.get("version", "1.0.0"),
+                capabilities=data.system_info.get("capabilities", []),
+                isolation_status="NONE",
+                last_heartbeat=now(),
+                enrolled_at=now(),
+                auth_token_hash=auth_hash,
+            )
+            db.add(agent)
+            db.flush()
+        else:
+            agent.public_key = data.public_key
+            agent.status = "ENROLLED"
+            agent.auth_token_hash = auth_hash
+            agent.enrolled_at = now()
+            agent.last_heartbeat = now()
+            agent.capabilities = data.system_info.get("capabilities", agent.capabilities)
+            agent.os = data.system_info.get("os", agent.os)
+            agent.ip = data.system_info.get("ip", agent.ip)
+
+        token_record.used_by_agent_id = agent.id
+
+        collector = db.scalar(
+            select(Collector).where(
+                Collector.organization_id == org_id,
+                Collector.name == data.name,
+                Collector.type == "endpoint-agent",
+            )
+        )
+        if not collector:
+            collector = Collector(
+                organization_id=org_id,
+                name=data.name,
+                type="endpoint-agent",
+                version=agent.version,
+                last_heartbeat=now(),
+            )
+            db.add(collector)
+            db.flush()
+
+        entity = db.scalar(
+            select(Entity).where(
+                Entity.organization_id == org_id,
+                Entity.type == "host",
+                Entity.value == data.name,
+            )
+        )
+        if not entity:
+            entity = Entity(
+                organization_id=org_id,
+                type="host",
+                value=data.name,
+                attributes={},
+            )
+            db.add(entity)
+            db.flush()
+
+        entity.attributes = dict(entity.attributes or {}) | {
+            "agent_id": agent.id,
+            "collector_id": collector.id,
+            "agent_version": agent.version,
+            "os": agent.os,
+            "ip": agent.ip,
+            "isolation_status": agent.isolation_status,
+            "public_key": agent.public_key,
+        }
+
+        ctrl_pubkey = get_controller_public_key_hex(settings)
+        audit(
+            db,
+            settings,
+            org_id,
+            f"agent:{agent.id}",
+            "agents.enroll",
+            agent.id,
+            details={"name": data.name, "public_key": data.public_key},
+            request=request,
+        )
+        db.commit()
+        return {
+            "status": "ok",
+            "agent_id": agent.id,
+            "auth_token": raw_auth_token,
+            "controller_public_key": ctrl_pubkey,
+        }
+
+    @app.post(PREFIX + "/agents/{name}/rotate-key", tags=["agents"])
+    def rotate_agent_key(
+        name: str,
+        data: AgentKeyRotateInput,
+        request: Request,
+        principal=Depends(require("agents.poll", "agents.receipt")),
+        db=Depends(db_session),
+    ):
+        agent = db.scalar(
+            select(Agent).where(
+                Agent.organization_id == principal.organization_id,
+                Agent.name == name,
+            ).with_for_update()
+        )
+        if not agent or agent.status != "ENROLLED":
+            raise HTTPException(404, "Enrolled agent not found")
+        if principal.agent and principal.agent.id != agent.id:
+            raise HTTPException(403, "Agent not authorized to rotate keys for another endpoint")
+
+        agent.public_key = data.new_public_key
+        audit(
+            db,
+            settings,
+            principal.organization_id,
+            principal.user.id,
+            "agents.rotate_key",
+            agent.id,
+            details={"name": name, "new_public_key": data.new_public_key},
+            request=request,
+        )
+        db.commit()
+        return {"status": "ok", "public_key": agent.public_key}
+
+    @app.post(PREFIX + "/agents/{name}/revoke", tags=["agents"])
+    def revoke_agent(
+        name: str,
+        data: AgentRevokeInput,
+        request: Request,
+        principal=Depends(require("agents.revoke")),
+        db=Depends(db_session),
+    ):
+        agent = db.scalar(
+            select(Agent).where(
+                Agent.organization_id == principal.organization_id,
+                Agent.name == name,
+            ).with_for_update()
+        )
+        if not agent:
+            raise HTTPException(404, "Agent not found")
+        agent.status = "REVOKED"
+        agent.revoked_at = now()
+        audit(
+            db,
+            settings,
+            principal.organization_id,
+            principal.user.id,
+            "agents.revoke",
+            agent.id,
+            details={"name": name, "reason": data.reason},
+            request=request,
+        )
+        db.commit()
+        return {"status": "REVOKED", "agent_id": agent.id}
+
     @app.post(PREFIX + "/agents/heartbeat", tags=["agents"])
     def agent_heartbeat(
         data: AgentHeartbeatInput,
@@ -1341,6 +1640,39 @@ def create_app(settings: Settings | None = None):
     ):
         rate_limit(request, f"agent:{data.name}", 60)
         from aegis.db import Collector, Entity, now
+
+        # Update Agent table if registered
+        agent_row = db.scalar(
+            select(Agent).where(
+                Agent.organization_id == principal.organization_id,
+                Agent.name == data.name,
+            )
+        )
+        if agent_row:
+            if agent_row.status == "REVOKED":
+                raise HTTPException(403, "Agent identity is revoked")
+            agent_row.last_heartbeat = now()
+            agent_row.isolation_status = data.isolation_status
+            agent_row.ip = data.ip
+            agent_row.version = data.version
+            agent_row.capabilities = data.capabilities
+            if data.public_key:
+                agent_row.public_key = data.public_key
+        elif data.public_key:
+            agent_row = Agent(
+                organization_id=principal.organization_id,
+                name=data.name,
+                public_key=data.public_key,
+                status="ENROLLED",
+                version=data.version,
+                os=data.os,
+                ip=data.ip,
+                capabilities=data.capabilities,
+                isolation_status=data.isolation_status,
+                last_heartbeat=now(),
+            )
+            db.add(agent_row)
+            db.flush()
 
         collector = db.scalar(
             select(Collector).where(
@@ -1382,6 +1714,8 @@ def create_app(settings: Settings | None = None):
 
         entity.attributes = dict(entity.attributes or {}) | {
             "agent_id": collector.id,
+            "endpoint_agent_id": agent_row.id if agent_row else None,
+            "collector_id": collector.id,
             "agent_version": data.version,
             "os": data.os,
             "ip": data.ip,
@@ -1417,6 +1751,11 @@ def create_app(settings: Settings | None = None):
         principal=Depends(require("playbooks.read")),
         db=Depends(db_session),
     ):
+        # Enforce agent-to-host authorization
+        if principal.agent is not None:
+            if principal.agent.name != name or principal.agent.status != "ENROLLED":
+                raise HTTPException(403, "Agent not authorized for this host")
+
         entity = db.scalar(
             select(Entity).where(
                 Entity.organization_id == principal.organization_id,
@@ -1439,17 +1778,54 @@ def create_app(settings: Settings | None = None):
                 .order_by(PlaybookExecution.created_at.asc())
             )
         )
-        return [
-            {
+
+        agent = db.scalar(
+            select(Agent).where(
+                Agent.organization_id == principal.organization_id,
+                Agent.name == name,
+            )
+        )
+        agent_id = agent.id if agent else name
+
+        ctrl_priv = get_controller_signing_key(settings)
+        ctrl_pub = get_controller_public_key_hex(settings)
+
+        results = []
+        for execution in executions:
+            res_dict = dict(execution.result or {})
+            envelope = res_dict.get("command_envelope")
+            ctrl_sig = res_dict.get("controller_signature")
+            if not envelope or not ctrl_sig:
+                envelope = {
+                    "version": "1.0",
+                    "command_id": execution.id,
+                    "agent_id": agent_id,
+                    "organization_id": principal.organization_id,
+                    "action": execution.action,
+                    "parameters": res_dict.get("params", {}),
+                    "issued_at": time.time(),
+                    "expires_at": time.time() + 300.0,
+                    "nonce": secrets.token_hex(16),
+                }
+                ctrl_sig = ed25519_sign_canonical(ctrl_priv, envelope)
+                res_dict["command_envelope"] = envelope
+                res_dict["controller_signature"] = ctrl_sig
+                res_dict["controller_public_key"] = ctrl_pub
+                execution.result = res_dict
+
+            results.append({
                 "id": execution.id,
                 "action": execution.action,
                 "target": execution.target,
                 "status": execution.status,
                 "created_at": execution.created_at.isoformat(),
-                "params": (execution.result or {}).get("params", {}),
-            }
-            for execution in executions
-        ]
+                "params": res_dict.get("params", {}),
+                "envelope": envelope,
+                "controller_signature": ctrl_sig,
+                "controller_public_key": ctrl_pub,
+            })
+        db.commit()
+        return results
 
     @app.post(PREFIX + "/agents/{name}/receipts", tags=["agents"])
     def agent_receipt(
@@ -1460,6 +1836,21 @@ def create_app(settings: Settings | None = None):
         db=Depends(db_session),
     ):
         rate_limit(request, f"receipt:{data.command_id}", 30)
+
+        # Enforce agent-to-host authorization
+        if principal.agent is not None:
+            if principal.agent.name != name or principal.agent.status != "ENROLLED":
+                raise HTTPException(403, "Agent not authorized to submit receipts for this host")
+
+        agent = db.scalar(
+            select(Agent).where(
+                Agent.organization_id == principal.organization_id,
+                Agent.name == name,
+            )
+        )
+        if agent and agent.status == "REVOKED":
+            raise HTTPException(403, "Agent identity is revoked")
+
         execution = db.scalar(
             select(PlaybookExecution)
             .where(
@@ -1475,19 +1866,44 @@ def create_app(settings: Settings | None = None):
         if execution.action != data.action:
             raise HTTPException(409, "Receipt action does not match execution command")
 
-        expected_payload = {
-            "command_id": data.command_id,
-            "agent": name,
-            "action": data.action,
-            "status": data.status,
-            "result": data.details,
-        }
-        expected_hash = hashlib.sha256(canonical(expected_payload).encode()).hexdigest()
-        if not hmac.compare_digest(expected_hash, data.receipt_hash):
-            raise HTTPException(400, "Cryptographic execution receipt hash does not match payload")
+        # Cryptographic verification
+        if data.receipt and data.signature:
+            if not agent:
+                raise HTTPException(400, "Endpoint agent not registered with public key")
+            # Verify Ed25519 signature
+            if not ed25519_verify_canonical(agent.public_key, data.signature, data.receipt):
+                raise HTTPException(400, "Cryptographic execution receipt signature verification failed")
+
+            # Verify cryptographic binding to command and scope
+            receipt_cmd_id = data.receipt.get("command_id")
+            receipt_action = data.receipt.get("action")
+            receipt_agent = data.receipt.get("agent_id")
+            if receipt_cmd_id != execution.id:
+                raise HTTPException(400, "Receipt command ID does not match execution")
+            if receipt_action != execution.action:
+                raise HTTPException(400, "Receipt action does not match execution")
+            if receipt_agent and receipt_agent != agent.id and receipt_agent != name:
+                raise HTTPException(400, "Receipt agent ID does not match enrolled agent")
+
+            expected_ctrl_sig = (execution.result or {}).get("controller_signature")
+            receipt_ctrl_sig = data.receipt.get("command_signature")
+            if expected_ctrl_sig and receipt_ctrl_sig and receipt_ctrl_sig != expected_ctrl_sig:
+                raise HTTPException(400, "Receipt is not bound to the dispatched controller command")
+        elif data.receipt_hash:
+            expected_payload = {
+                "command_id": data.command_id,
+                "agent": name,
+                "action": data.action,
+                "status": data.status,
+                "result": data.details,
+            }
+            expected_hash = hashlib.sha256(canonical(expected_payload).encode()).hexdigest()
+            if not hmac.compare_digest(expected_hash, data.receipt_hash):
+                raise HTTPException(400, "Cryptographic execution receipt hash does not match payload")
 
         from aegis.db import now
 
+        receipt_details = data.receipt.get("result", data.details) if data.receipt else data.details
         if data.status == "SUCCESS":
             execution.status = "VERIFIED"
             execution.result = {
@@ -1496,8 +1912,10 @@ def create_app(settings: Settings | None = None):
                 "enforced_externally": True,
                 "agent": name,
                 "action": data.action,
-                "receipt_hash": data.receipt_hash,
-                "details": data.details,
+                "receipt": data.receipt,
+                "signature": data.signature,
+                "receipt_hash": data.receipt_hash or (hashlib.sha256(canonical(data.receipt).encode()).hexdigest() if data.receipt else ""),
+                "details": receipt_details,
                 "enforced_at": now().isoformat(),
             }
             entity = db.scalar(
@@ -1522,7 +1940,9 @@ def create_app(settings: Settings | None = None):
                 "enforced_externally": False,
                 "agent": name,
                 "action": data.action,
-                "error": data.details.get("error", "Endpoint execution failed"),
+                "receipt": data.receipt,
+                "signature": data.signature,
+                "error": receipt_details.get("error", "Endpoint execution failed"),
             }
 
         execution.revision += 1
@@ -1563,11 +1983,19 @@ def create_app(settings: Settings | None = None):
                 )
             )
         }
+        agents_map = {
+            a.name: a
+            for a in db.scalars(
+                select(Agent).where(Agent.organization_id == principal.organization_id)
+            )
+        }
         return [
             {
                 "id": c.id,
+                "agent_id": agents_map[c.name].id if c.name in agents_map else c.id,
                 "name": c.name,
                 "version": c.version,
+                "status": agents_map[c.name].status if c.name in agents_map else "ONLINE",
                 "last_heartbeat": c.last_heartbeat.isoformat(),
                 "isolation_status": hosts[c.name].attributes.get("isolation_status", "NONE")
                 if c.name in hosts and hosts[c.name] and hosts[c.name].attributes

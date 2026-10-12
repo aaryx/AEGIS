@@ -16,7 +16,16 @@ depends_on = None
 
 def upgrade():
     # Freeze the initial table set: later migrations exclusively own new tables.
-    initial = set(Base.metadata.tables) - {"search_jobs", "integrations", "notification_deliveries"}
+    later_tables = {
+        "search_jobs",
+        "integrations",
+        "notification_deliveries",
+        "agents",
+        "agent_enrollment_tokens",
+        "audit_heads",
+        "audit_checkpoints",
+    }
+    initial = set(Base.metadata.tables) - later_tables
     Base.metadata.create_all(
         op.get_bind(), tables=[table for table in Base.metadata.sorted_tables if table.name in initial]
     )

@@ -9,7 +9,19 @@ from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import delete, select
 
-from aegis.db import APIKey, AuditLog, Organization, SessionToken, User, WindowState, now, uid
+from aegis.db import (
+    Agent,
+    APIKey,
+    AuditCheckpoint,
+    AuditHead,
+    AuditLog,
+    Organization,
+    SessionToken,
+    User,
+    WindowState,
+    now,
+    uid,
+)
 from aegis.parsers import canonical
 
 PASSWORDS = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2)
@@ -30,6 +42,7 @@ READ = {
         "collectors",
         "system",
         "playbooks",
+        "agents",
     )
 }
 ANALYST = READ | {
@@ -41,9 +54,24 @@ ANALYST = READ | {
     "reports.create",
     "ai.use",
 }
-SENIOR = ANALYST | {"rules.execute", "iocs.write", "playbooks.execute"}
+SENIOR = ANALYST | {
+    "rules.execute",
+    "iocs.write",
+    "playbooks.execute",
+    "agents.poll",
+    "agents.receipt",
+}
 MANAGER = SENIOR | {"playbooks.approve", "audit.read"}
-ADMIN = MANAGER | {"events.ingest", "rules.write", "users.manage", "integrations.manage", "system.manage"}
+ADMIN = MANAGER | {
+    "events.ingest",
+    "rules.write",
+    "users.manage",
+    "integrations.manage",
+    "system.manage",
+    "agents.manage",
+    "agents.enroll",
+    "agents.revoke",
+}
 ROLES = {
     "VIEWER": READ,
     "ANALYST": ANALYST,
@@ -81,18 +109,50 @@ def audit(
     details=None,
     request=None,
 ):
-    org = db.scalar(
-        select(Organization)
-        .where(Organization.id == organization_id)
+    # Lock only the tenant's AuditHead row to eliminate organization-wide lock contention
+    bind = db.get_bind()
+    if bind.dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        db.execute(
+            pg_insert(AuditHead)
+            .values(
+                organization_id=organization_id,
+                audit_head="0" * 64,
+                sequence_number=0,
+                updated_at=now(),
+            )
+            .on_conflict_do_nothing()
+        )
+    else:
+        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+        db.execute(
+            sqlite_insert(AuditHead)
+            .values(
+                organization_id=organization_id,
+                audit_head="0" * 64,
+                sequence_number=0,
+                updated_at=now(),
+            )
+            .on_conflict_do_nothing()
+        )
+
+    head = db.scalar(
+        select(AuditHead)
+        .where(AuditHead.organization_id == organization_id)
         .with_for_update()
-        .execution_options(populate_existing=True)
     )
+    if not head:
+        head = db.get(AuditHead, organization_id)
+
+    prev_head = head.audit_head
     data = dict(details or {})
     if request:
         data.update(
             source_ip=request.client.host if request.client else "unknown",
             user_agent=request.headers.get("user-agent", "")[:300],
-            request_id=request.state.request_id,
+            request_id=getattr(request.state, "request_id", "unknown"),
         )
     record = AuditLog(
         id=uid(),
@@ -103,7 +163,8 @@ def audit(
         resource_id=resource_id,
         result=result,
         details=data,
-        previous_hash=org.audit_head,
+        previous_hash=prev_head,
+        key_version=getattr(settings, "audit_key_version", 1),
     )
     message = canonical(
         {
@@ -115,20 +176,44 @@ def audit(
             "resource": resource_id,
             "result": result,
             "details": data,
-            "previous": org.audit_head,
+            "previous": prev_head,
         }
     )
+    key_ver = getattr(settings, "audit_key_version", 1)
+    audit_key = derive_audit_key(settings.audit_secret.get_secret_value(), key_ver)
     record.entry_hash = hmac.new(
-        settings.audit_secret.get_secret_value().encode(), message.encode(), hashlib.sha256
+        audit_key, message.encode(), hashlib.sha256
     ).hexdigest()
-    org.audit_head = record.entry_hash
+    head.audit_head = record.entry_hash
+    head.sequence_number += 1
+    head.updated_at = record.created_at
     db.add(record)
+
+    # Sync organization audit_head without requiring row lock
+    org = db.get(Organization, organization_id)
+    if org:
+        org.audit_head = record.entry_hash
     db.flush()
     return record
 
 
+def derive_audit_key(secret: str, version: int = 1) -> bytes:
+    if version <= 1:
+        return secret.encode()
+    from aegis.crypto import hkdf_derive_key
+    return hkdf_derive_key(secret.encode(), f"aegis-audit-key-v{version}".encode(), length=32)
+
+
 def verify_audit(db, settings, organization_id: str) -> bool:
-    records = list(db.scalars(select(AuditLog).where(AuditLog.organization_id == organization_id)))
+    records = list(
+        db.scalars(
+            select(AuditLog)
+            .where(AuditLog.organization_id == organization_id)
+            .order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
+        )
+    )
+    if not records:
+        return True
     by_previous = {record.previous_hash: record for record in records}
     previous = "0" * 64
     visited = 0
@@ -151,18 +236,85 @@ def verify_audit(db, settings, organization_id: str) -> bool:
                 "previous": previous,
             }
         )
+        key_ver = getattr(record, "key_version", 1) or 1
+        audit_key = derive_audit_key(settings.audit_secret.get_secret_value(), key_ver)
         expected = hmac.new(
-            settings.audit_secret.get_secret_value().encode(), message.encode(), hashlib.sha256
+            audit_key, message.encode(), hashlib.sha256
         ).hexdigest()
         if not hmac.compare_digest(expected, record.entry_hash):
             return False
         previous = record.entry_hash
         visited += 1
-    return visited == len(records) and previous == db.get(Organization, organization_id).audit_head
+
+    head = db.get(AuditHead, organization_id)
+    org = db.get(Organization, organization_id)
+    expected_head = head.audit_head if head else (org.audit_head if org else "")
+    return visited == len(records) and previous == expected_head
+
+
+def create_audit_checkpoint(db, settings, organization_id: str) -> AuditCheckpoint:
+    head = db.get(AuditHead, organization_id)
+    if not head:
+        head = AuditHead(
+            organization_id=organization_id,
+            audit_head="0" * 64,
+            sequence_number=0,
+            updated_at=now(),
+        )
+        db.add(head)
+        db.flush()
+
+    stamp = now()
+    checkpoint_payload = {
+        "organization_id": organization_id,
+        "sequence_number": head.sequence_number,
+        "head_entry_hash": head.audit_head,
+        "timestamp": stamp.isoformat(),
+    }
+    from aegis.crypto import ed25519_sign_canonical, get_controller_signing_key
+    ctrl_priv = get_controller_signing_key(settings)
+    signature = ed25519_sign_canonical(ctrl_priv, checkpoint_payload)
+    checkpoint_hash = hashlib.sha256(canonical(checkpoint_payload).encode()).hexdigest()
+    checkpoint = AuditCheckpoint(
+        id=uid(),
+        organization_id=organization_id,
+        created_at=stamp,
+        sequence_number=head.sequence_number,
+        head_entry_hash=head.audit_head,
+        checkpoint_hash=checkpoint_hash,
+        signature=signature,
+        key_version=getattr(settings, "audit_key_version", 1),
+    )
+    db.add(checkpoint)
+    db.flush()
+    return checkpoint
+
+
+def verify_audit_checkpoint(db, settings, checkpoint: AuditCheckpoint) -> bool:
+    from datetime import UTC
+
+    from aegis.crypto import ed25519_verify_canonical, get_controller_public_key_hex
+
+    stamp = checkpoint.created_at
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+
+    ctrl_pub = get_controller_public_key_hex(settings)
+    payload = {
+        "organization_id": checkpoint.organization_id,
+        "sequence_number": checkpoint.sequence_number,
+        "head_entry_hash": checkpoint.head_entry_hash,
+        "timestamp": stamp.isoformat(),
+    }
+    expected_hash = hashlib.sha256(canonical(payload).encode()).hexdigest()
+    if not hmac.compare_digest(expected_hash, checkpoint.checkpoint_hash):
+        return False
+    return ed25519_verify_canonical(ctrl_pub, checkpoint.signature, payload)
 
 
 def rate_limit(request: Request, key: str, maximum: int, seconds: int = 60):
-    bucket = f"aegis:rate:{token_hash(key)}:{int(time.time()) // seconds}"
+    sanitized_key = token_hash(str(key)[:256])
+    bucket = f"aegis:rate:{sanitized_key}:{int(time.time()) // seconds}"
     redis = request.app.state.redis
     if redis:
         pipe = redis.pipeline()
@@ -170,13 +322,39 @@ def rate_limit(request: Request, key: str, maximum: int, seconds: int = 60):
         pipe.expire(bucket, seconds * 2)
         count = pipe.execute()[0]
     else:
+        # Atomic DB operation for counter creation and increment across PostgreSQL & SQLite
+        now_ts = time.time()
+        expires_ts = now_ts + seconds * 2
         with request.app.state.sessions.begin() as db:
-            row = db.get(WindowState, bucket)
-            count = (row.data[0] if row else 0) + 1
-            if row:
-                row.data = [count]
+            bind = db.get_bind()
+            if bind.dialect.name == "postgresql":
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                res = db.execute(
+                    pg_insert(WindowState)
+                    .values(key=bucket, data=[1], expires=expires_ts)
+                    .on_conflict_do_nothing()
+                )
             else:
-                db.add(WindowState(key=bucket, data=[count], expires=time.time() + seconds * 2))
+                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+                res = db.execute(
+                    sqlite_insert(WindowState)
+                    .values(key=bucket, data=[1], expires=expires_ts)
+                    .on_conflict_do_nothing()
+                )
+            if res.rowcount > 0:
+                count = 1
+            else:
+                row = db.scalar(
+                    select(WindowState).where(WindowState.key == bucket).with_for_update()
+                )
+                if row:
+                    count = (row.data[0] if row.data else 0) + 1
+                    row.data = [count]
+                    row.expires = expires_ts
+                else:
+                    count = 1
     if count > maximum:
         raise HTTPException(429, "Rate limit exceeded; retry later", headers={"Retry-After": str(seconds)})
 
@@ -187,9 +365,12 @@ class Principal:
     permissions: set[str]
     session_id: str | None = None
     api_key_id: str | None = None
+    agent: Agent | None = None
 
     @property
     def organization_id(self):
+        if self.agent is not None:
+            return self.agent.organization_id
         return self.user.organization_id
 
 
@@ -199,6 +380,36 @@ def authenticate(request: Request, db=Depends(db_session)) -> Principal:
     token = bearer or request.cookies.get("aegis_session")
     if not token or len(token) > 200:
         raise HTTPException(401, "Authentication required")
+
+    # 1. Endpoint Agent Authentication
+    if token.startswith("aegis_agt_"):
+        agent = db.scalar(
+            select(Agent).where(
+                Agent.auth_token_hash == token_hash(token),
+                Agent.status == "ENROLLED",
+            )
+        )
+        if not agent:
+            raise HTTPException(401, "Agent authentication failed: token invalid or agent revoked")
+
+        agent_user = User(
+            id=f"agt-user-{agent.id}",
+            organization_id=agent.organization_id,
+            username=f"agent:{agent.name}",
+            password_hash="",
+            role="VIEWER",
+            active=True,
+        )
+        agent_permissions = {"agents.heartbeat", "agents.poll", "agents.receipt"}
+        principal = Principal(
+            user=agent_user,
+            permissions=agent_permissions,
+            agent=agent,
+        )
+        request.state.principal = principal
+        return principal
+
+    # 2. Standard User Session or API Key Authentication
     key = None
     session = None
     if token.startswith("aegis_key_"):

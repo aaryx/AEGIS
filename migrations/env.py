@@ -11,7 +11,8 @@ if context.is_offline_mode():
     with context.begin_transaction():
         context.run_migrations()
 else:
-    engine = create_engine(get_settings().database_url, poolclass=pool.NullPool)
+    url = context.config.get_main_option("sqlalchemy.url") or get_settings().database_url
+    engine = create_engine(url, poolclass=pool.NullPool)
     with engine.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():

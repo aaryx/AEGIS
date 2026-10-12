@@ -338,6 +338,7 @@ class IOCInput(StrictModel):
 class Login(StrictModel):
     username: str = Field(min_length=1, max_length=254)
     password: str = Field(min_length=1, max_length=256)
+    mfa_code: str | None = Field(default=None, max_length=6)
 
 
 class UserInput(Login):
@@ -388,12 +389,72 @@ class AgentHeartbeatInput(StrictModel):
     capabilities: list[str] = Field(
         default_factory=lambda: ["isolate_host", "unisolate_host", "terminate_process"]
     )
+    public_key: str | None = None
+
+
+class CommandEnvelope(StrictModel):
+    version: str = "1.0"
+    command_id: str = Field(min_length=1, max_length=80)
+    agent_id: str = Field(min_length=1, max_length=80)
+    organization_id: str = Field(min_length=1, max_length=80)
+    action: str = Field(min_length=1, max_length=50)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    issued_at: float
+    expires_at: float
+    nonce: str = Field(min_length=16, max_length=64)
+
+
+class SignedCommand(StrictModel):
+    command_id: str
+    envelope: dict[str, Any]
+    controller_signature: str
+    controller_public_key: str
+
+
+class ExecutionReceipt(StrictModel):
+    version: str = "1.0"
+    command_id: str = Field(min_length=1, max_length=80)
+    agent_id: str = Field(min_length=1, max_length=80)
+    organization_id: str = Field(min_length=1, max_length=80)
+    action: str = Field(min_length=1, max_length=50)
+    status: Literal["SUCCESS", "FAILED"]
+    result: dict[str, Any] = Field(default_factory=dict)
+    command_signature: str = Field(default="", max_length=256)
+    timestamp: float
+    nonce: str = Field(min_length=16, max_length=64)
 
 
 class AgentReceiptInput(StrictModel):
     command_id: str = Field(min_length=1, max_length=80)
     action: str = Field(min_length=1, max_length=50)
     status: Literal["SUCCESS", "FAILED"]
-    receipt_hash: str = Field(min_length=64, max_length=64)
+    receipt: dict[str, Any] = Field(default_factory=dict)
+    signature: str = Field(default="", max_length=256)
+    receipt_hash: str | None = Field(default=None, max_length=64)
     details: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentEnrollInput(StrictModel):
+    name: str = Field(min_length=1, max_length=200)
+    enrollment_token: str = Field(min_length=10, max_length=200)
+    public_key: str = Field(min_length=64, max_length=128)
+    system_info: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentKeyRotateInput(StrictModel):
+    new_public_key: str = Field(min_length=64, max_length=128)
+    rotation_signature: str = Field(min_length=64, max_length=256)
+
+
+class AgentRevokeInput(StrictModel):
+    reason: str = Field(default="Revoked by operator", max_length=500)
+
+
+class MFASetupResponse(StrictModel):
+    secret: str
+    otpauth_uri: str
+
+
+class MFAVerifyInput(StrictModel):
+    code: str = Field(min_length=6, max_length=6)
 

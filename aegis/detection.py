@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 from typing import Protocol
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from aegis.db import WindowState
@@ -25,8 +26,30 @@ class SQLState:
         self.cache: dict[str, WindowState] = {}
 
     def append(self, key, event, window):
-        row = self.cache.get(key) or self.db.get(WindowState, key)
-        values = row.data if row else []
+        # Transactional row lock to prevent lost updates under concurrency
+        bind = self.db.get_bind()
+        expires_ts = time.time() + window + self.lateness
+        if bind.dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+            self.db.execute(
+                pg_insert(WindowState)
+                .values(key=key, data=[], expires=expires_ts)
+                .on_conflict_do_nothing()
+            )
+        else:
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+            self.db.execute(
+                sqlite_insert(WindowState)
+                .values(key=key, data=[], expires=expires_ts)
+                .on_conflict_do_nothing()
+            )
+
+        row = self.db.scalar(
+            select(WindowState).where(WindowState.key == key).with_for_update()
+        )
+        values = list(row.data) if (row and row.data) else []
         current = datetime.fromisoformat(event["timestamp"]).timestamp()
         watermark = max(
             [current, *(datetime.fromisoformat(item["timestamp"]).timestamp() for item in values)]
@@ -45,11 +68,14 @@ class SQLState:
         )
         if len(values) > self.limit:
             raise ValueError("Correlation window capacity exceeded; tune rule or increase configured limit")
+
         if row:
-            row.data, row.expires = values, time.time() + window + self.lateness
+            row.data = values
+            row.expires = time.time() + window + self.lateness
         else:
             row = WindowState(key=key, data=values, expires=time.time() + window + self.lateness)
             self.db.add(row)
+
         self.cache[key] = row
         return [
             item
