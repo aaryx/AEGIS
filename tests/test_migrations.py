@@ -20,9 +20,10 @@ def test_clean_install_and_repeated_migration(tmp_path, monkeypatch):
             "agents",
             "agent_enrollment_tokens",
             "audit_heads",
+            "audit_checkpoints",
         } <= set(inspect(engine).get_table_names())
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0005"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0006"
         engine.dispose()
     finally:
         get_settings.cache_clear()

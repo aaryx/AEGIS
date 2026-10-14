@@ -284,6 +284,11 @@ class AuditCheckpoint(Owned, Base):
     checkpoint_hash: Mapped[str] = mapped_column(String(64))
     signature: Mapped[str] = mapped_column(String(256))
     key_version: Mapped[int] = mapped_column(default=1)
+    anchor_status: Mapped[str] = mapped_column(String(30), default="LOCAL")
+    anchor_uri: Mapped[str | None] = mapped_column(String(500), default=None)
+    anchor_version_id: Mapped[str | None] = mapped_column(String(100), default=None)
+    anchored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    anchor_error: Mapped[str | None] = mapped_column(String(500), default=None)
 
 
 class Agent(Owned, Base):

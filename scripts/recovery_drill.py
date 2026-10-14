@@ -48,7 +48,7 @@ def main():
             )
         verification = """
 import json, os
-from sqlalchemy import create_engine, select, func
+from sqlalchemy import create_engine, select, func, inspect, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 from aegis.config import get_settings
@@ -64,7 +64,11 @@ with Session(engine) as db:
         count+=1
     for org in db.scalars(select(Organization)):
         if not verify_audit(db, settings, org.id): raise RuntimeError('Audit chain mismatch')
-    print(json.dumps({'verified_events':count,'audit_chains':'valid'}))
+    checkpoints_count = 0
+    inspector = inspect(engine)
+    if 'audit_checkpoints' in inspector.get_table_names():
+        checkpoints_count = db.scalar(text('SELECT count(*) FROM audit_checkpoints')) or 0
+    print(json.dumps({'verified_events':count,'audit_chains':'valid','checkpoints_count':checkpoints_count}))
 """
         result = run(
             ["run", "--rm", "--no-deps", "-e", "RESTORE_DATABASE=" + database_name, "initialize", "python", "-c", verification],

@@ -407,6 +407,8 @@ def create_app(settings: Settings | None = None):
             status_code=409,
         )
 
+    @app.get("/health", tags=["system"])
+    @app.get(PREFIX + "/health", tags=["system"])
     @app.get(PREFIX + "/system/liveness", tags=["system"])
     def liveness():
         return {"status": "HEALTHY", "version": __version__}
