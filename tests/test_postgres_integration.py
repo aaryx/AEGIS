@@ -833,5 +833,8 @@ def test_postgres_concurrent_rule_activation_and_replay(pg_system):
             assert j.status in {"COMPLETED", "COMPLETED_WITH_WARNINGS"}
             assert j.events_evaluated > 0
             matches = list(db.scalars(select(ReplayMatch).where(ReplayMatch.job_id == j.id)))
-            assert len(matches) == len(j.metrics["candidate_matches_count"]) if isinstance(j.metrics, dict) and "candidate_matches_count" in j.metrics else len(matches) >= 0
+            if isinstance(j.metrics, dict) and "candidate_matches_count" in j.metrics:
+                assert len(matches) == j.metrics["candidate_matches_count"]
+            else:
+                assert len(matches) >= 0
 

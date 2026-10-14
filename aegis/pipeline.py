@@ -73,48 +73,47 @@ def ingest(db, settings, organization_id: str, events: list[EventInput], actor: 
             if prev_hash != evidence_hash:
                 raise ValueError("Source sequence was reused with different evidence")
             duplicates.append(event.event_id)
-            continue
-
-        if is_pg:
-            from sqlalchemy.dialects.postgresql import insert as pg_insert
-
-            stmt = (
-                pg_insert(EventRecord)
-                .values(
-                    id=event.event_id,
-                    organization_id=organization_id,
-                    timestamp=event.timestamp,
-                    source=event.source,
-                    evidence_hash=evidence_hash,
-                    payload=event.model_dump(mode="json"),
-                )
-                .on_conflict_do_nothing(index_elements=["id"])
-                .returning(EventRecord.id)
-            )
-            inserted_id = db.execute(stmt).scalar_one_or_none()
         else:
-            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+            if is_pg:
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-            stmt = (
-                sqlite_insert(EventRecord)
-                .values(
-                    id=event.event_id,
-                    organization_id=organization_id,
-                    timestamp=event.timestamp,
-                    source=event.source,
-                    evidence_hash=evidence_hash,
-                    payload=event.model_dump(mode="json"),
+                stmt = (
+                    pg_insert(EventRecord)
+                    .values(
+                        id=event.event_id,
+                        organization_id=organization_id,
+                        timestamp=event.timestamp,
+                        source=event.source,
+                        evidence_hash=evidence_hash,
+                        payload=event.model_dump(mode="json"),
+                    )
+                    .on_conflict_do_nothing(index_elements=["id"])
+                    .returning(EventRecord.id)
                 )
-                .on_conflict_do_nothing(index_elements=["id"])
-                .returning(EventRecord.id)
-            )
-            inserted_id = db.execute(stmt).scalar_one_or_none()
+                inserted_id = db.execute(stmt).scalar_one_or_none()
+            else:
+                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-        existing[event.event_id] = evidence_hash
-        if inserted_id:
-            accepted.append(event.event_id)
-        else:
-            duplicates.append(event.event_id)
+                stmt = (
+                    sqlite_insert(EventRecord)
+                    .values(
+                        id=event.event_id,
+                        organization_id=organization_id,
+                        timestamp=event.timestamp,
+                        source=event.source,
+                        evidence_hash=evidence_hash,
+                        payload=event.model_dump(mode="json"),
+                    )
+                    .on_conflict_do_nothing(index_elements=["id"])
+                    .returning(EventRecord.id)
+                )
+                inserted_id = db.execute(stmt).scalar_one_or_none()
+
+            existing[event.event_id] = evidence_hash
+            if inserted_id:
+                accepted.append(event.event_id)
+            else:
+                duplicates.append(event.event_id)
 
         # Atomic collector upsert & counter increment
         if is_pg:
