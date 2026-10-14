@@ -66,7 +66,8 @@ def main():
         coverage_response = client.get("coverage/mitre")
         coverage_response.raise_for_status()
         cov_data = coverage_response.json()
-        if cov_data.get("covered_techniques", 0) <= 0:
+        covered_count = cov_data.get("covered_total", len(cov_data.get("covered_techniques", {})))
+        if covered_count <= 0:
             raise RuntimeError("MITRE coverage calculation returned 0 covered techniques")
 
         # 5. Smoke Check: Replay Execution, Persistence, and Sandbox Isolation
@@ -142,7 +143,7 @@ def main():
                         "tenant_isolation": "PASS",
                         "system_readiness": "PASS",
                         "detection_rules": len(rules_list),
-                        "mitre_covered_techniques": cov_data.get("covered_techniques"),
+                        "mitre_covered_techniques": covered_count,
                         "replay_persistence": "PASS",
                         "replay_sandbox_isolation": "PASS",
                     },
