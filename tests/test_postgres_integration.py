@@ -30,6 +30,7 @@ from aegis.db import (
     Entity,
     EventRecord,
     Organization,
+    User,
     WindowState,
 )
 from aegis.detection import SQLState
@@ -80,6 +81,15 @@ def pg_system(pg_engine, pg_session_factory):
         db.add(org)
         db.flush()
         org_id = org.id
+        admin_user = User(
+            organization_id=org_id,
+            username=f"pg_admin_{uuid4().hex[:8]}",
+            password_hash="dummy_hash",
+            role="admin",
+        )
+        db.add(admin_user)
+        db.flush()
+        user_id = admin_user.id
         seed_rules(db, org_id)
 
     return {
@@ -87,6 +97,7 @@ def pg_system(pg_engine, pg_session_factory):
         "sessions": pg_session_factory,
         "settings": settings,
         "org": org_id,
+        "user_id": user_id,
     }
 
 
@@ -281,7 +292,7 @@ def test_postgres_transaction_rollback_and_retry_behavior(pg_system):
     # 1. Execute an intentionally aborted transaction
     try:
         with session_factory.begin() as db:
-            db.add(WindowState(key=test_key, data=[1], expires=999999.0))
+            db.add(WindowState(key=test_key, data=[1], expires=time.time() + 3600.0))
             db.flush()
             # Trigger deliberate exception
             raise RuntimeError("Deliberate abort to test rollback")
@@ -294,7 +305,7 @@ def test_postgres_transaction_rollback_and_retry_behavior(pg_system):
 
     # 3. Clean transaction retry succeeds on recycled connection
     with session_factory.begin() as db:
-        db.add(WindowState(key=test_key, data=[42], expires=999999.0))
+        db.add(WindowState(key=test_key, data=[42], expires=time.time() + 3600.0))
 
     with session_factory() as db:
         row = db.get(WindowState, test_key)
@@ -591,25 +602,29 @@ def test_postgres_lock_timeout_and_abort_recovery(pg_system):
     session_factory = pg_system["sessions"]
     lock_key = f"lock_test_{uuid4().hex[:6]}"
 
-    # Setup initial row
+    # Setup initial row with future expiration so background worker does not prune it
     with session_factory.begin() as db:
-        db.add(WindowState(key=lock_key, data=[100], expires=999999.0))
+        db.add(WindowState(key=lock_key, data=[100], expires=time.time() + 3600.0))
 
     import threading
     barrier = threading.Barrier(2)
     timed_out = []
+    holding_errors = []
 
     def holding_worker():
-        with session_factory.begin() as db:
-            # Take an exclusive row lock
-            db.scalar(
-                select(WindowState)
-                .where(WindowState.key == lock_key)
-                .with_for_update()
-            )
-            barrier.wait()
-            # Hold lock for 0.8s
-            time.sleep(0.8)
+        try:
+            with session_factory.begin() as db:
+                # Take an exclusive row lock
+                db.scalar(
+                    select(WindowState)
+                    .where(WindowState.key == lock_key)
+                    .with_for_update()
+                )
+                barrier.wait()
+                # Hold lock for 0.8s
+                time.sleep(0.8)
+        except Exception as exc:
+            holding_errors.append(exc)
 
     def blocked_worker():
         barrier.wait()
@@ -633,6 +648,7 @@ def test_postgres_lock_timeout_and_abort_recovery(pg_system):
     t1.join()
     t2.join()
 
+    assert len(holding_errors) == 0, f"holding_worker encountered: {holding_errors}"
     # The blocked session must have encountered lock timeout error
     assert len(timed_out) == 1
     assert "lock timeout" in str(timed_out[0]).lower() or "canceling statement due to lock timeout" in str(timed_out[0]).lower()
@@ -745,6 +761,7 @@ def test_postgres_concurrent_rule_activation_and_replay(pg_system):
 
     session_factory = pg_system["sessions"]
     org_id = pg_system["org"]
+    user_id = pg_system["user_id"]
 
     # 1. Ensure a seeded rule exists in PostgreSQL
     with session_factory.begin() as db:
@@ -761,7 +778,7 @@ def test_postgres_concurrent_rule_activation_and_replay(pg_system):
                 organization_id=org_id,
                 rule_id=rule_row.id,
                 version=1,
-                author="pg_tester",
+                author=user_id,
                 summary="Initial PostgreSQL version",
                 lifecycle_stage="ACTIVE",
                 document=rule_row.document,
@@ -786,7 +803,7 @@ def test_postgres_concurrent_rule_activation_and_replay(pg_system):
                 res = execute_replay(
                     db=db,
                     org_id=org_id,
-                    user_id=f"pg_worker_{worker_id}",
+                    user_id=user_id,
                     request=req,
                 )
                 results.append(res)

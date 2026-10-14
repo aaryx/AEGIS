@@ -2,7 +2,7 @@ import time
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select, tuple_, update
+from sqlalchemy import func, select, tuple_
 
 from aegis.db import (
     IOC,
@@ -126,12 +126,18 @@ def ingest(db, settings, organization_id: str, events: list[EventInput], actor: 
                     organization_id=organization_id,
                     name=event.collector,
                     type=event.source_type,
-                    events_received=0,
+                    events_received=1,
                     events_processed=0,
                     errors=0,
                     last_heartbeat=event.ingest_timestamp,
                 )
-                .on_conflict_do_nothing(index_elements=["organization_id", "name"])
+                .on_conflict_do_update(
+                    index_elements=["organization_id", "name"],
+                    set_={
+                        "events_received": Collector.events_received + 1,
+                        "last_heartbeat": event.ingest_timestamp,
+                    },
+                )
             )
             db.execute(col_stmt)
         else:
@@ -143,23 +149,20 @@ def ingest(db, settings, organization_id: str, events: list[EventInput], actor: 
                     organization_id=organization_id,
                     name=event.collector,
                     type=event.source_type,
-                    events_received=0,
+                    events_received=1,
                     events_processed=0,
                     errors=0,
                     last_heartbeat=event.ingest_timestamp,
                 )
-                .on_conflict_do_nothing(index_elements=["organization_id", "name"])
+                .on_conflict_do_update(
+                    index_elements=["organization_id", "name"],
+                    set_={
+                        "events_received": Collector.events_received + 1,
+                        "last_heartbeat": event.ingest_timestamp,
+                    },
+                )
             )
             db.execute(col_stmt)
-
-        db.execute(
-            update(Collector)
-            .where(Collector.organization_id == organization_id, Collector.name == event.collector)
-            .values(
-                events_received=Collector.events_received + 1,
-                last_heartbeat=event.ingest_timestamp,
-            )
-        )
     audit(
         db,
         settings,
