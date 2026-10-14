@@ -87,6 +87,11 @@ class Rule(Owned, Base):
     rule_id: Mapped[str] = mapped_column(String(80))
     version: Mapped[int] = mapped_column(default=1)
     enabled: Mapped[bool] = mapped_column(default=True)
+    status: Mapped[str] = mapped_column(String(30), default="ACTIVE")
+    lifecycle_stage: Mapped[str] = mapped_column(String(30), default="ACTIVE")
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    activated_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), default=None)
+    last_replay_id: Mapped[str | None] = mapped_column(String(80), default=None)
     document: Mapped[dict] = mapped_column(JSON)
     __table_args__ = (UniqueConstraint("organization_id", "rule_id"),)
 
@@ -97,8 +102,44 @@ class RuleVersion(Owned, Base):
     version: Mapped[int]
     author: Mapped[str] = mapped_column(ForeignKey("users.id"))
     summary: Mapped[str] = mapped_column(String(500))
+    lifecycle_stage: Mapped[str] = mapped_column(String(30), default="ACTIVE")
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), default=None)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     document: Mapped[dict] = mapped_column(JSON)
     __table_args__ = (UniqueConstraint("rule_id", "version"),)
+
+
+class ReplayJob(Owned, Base):
+    __tablename__ = "replay_jobs"
+    rule_id: Mapped[str] = mapped_column(String(80), index=True)
+    candidate_version: Mapped[int | None] = mapped_column(default=None)
+    active_version: Mapped[int | None] = mapped_column(default=None)
+    status: Mapped[str] = mapped_column(String(30), default="PENDING", index=True)
+    target_type: Mapped[str] = mapped_column(String(30))
+    target_params: Mapped[dict] = mapped_column(JSON, default=dict)
+    dry_run: Mapped[bool] = mapped_column(default=True)
+    events_evaluated: Mapped[int] = mapped_column(default=0)
+    candidate_matches_count: Mapped[int] = mapped_column(default=0)
+    active_matches_count: Mapped[int] = mapped_column(default=0)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    errors: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    __table_args__ = (Index("ix_replay_jobs_org_rule", "organization_id", "rule_id", "created_at"),)
+
+
+class ReplayMatch(Owned, Base):
+    __tablename__ = "replay_matches"
+    job_id: Mapped[str] = mapped_column(ForeignKey("replay_jobs.id", ondelete="CASCADE"), index=True)
+    event_id: Mapped[str] = mapped_column(String(80), index=True)
+    rule_id: Mapped[str] = mapped_column(String(80))
+    rule_version: Mapped[int] = mapped_column(default=1)
+    matched_candidate: Mapped[bool] = mapped_column(default=False)
+    matched_active: Mapped[bool] = mapped_column(default=False)
+    explanation: Mapped[dict] = mapped_column(JSON, default=dict)
+    event_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    __table_args__ = (Index("ix_replay_matches_job_event", "job_id", "event_id"),)
 
 
 class Alert(Owned, Base):

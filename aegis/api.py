@@ -52,6 +52,8 @@ from aegis.db import (
     Organization,
     PasswordReset,
     PlaybookExecution,
+    ReplayJob,
+    ReplayMatch,
     Report,
     Rule,
     RuleVersion,
@@ -85,8 +87,11 @@ from aegis.schemas import (
     Login,
     MFAVerifyInput,
     NoteInput,
+    ReplayRequest,
     ResponseInput,
     RoleName,
+    RuleActivateRequest,
+    RuleRollbackRequest,
     SearchQuery,
     StrictModel,
     UpdateStatus,
@@ -148,6 +153,7 @@ class RuleWrite(StrictModel):
     summary: str = Field(min_length=10, max_length=500)
     version: int = Field(0, ge=0)
     enabled: bool = True
+    lifecycle_stage: str = Field("DRAFT", max_length=30)
 
 
 class RuleTest(StrictModel):
@@ -1195,6 +1201,83 @@ def create_app(settings: Settings | None = None):
         db.commit()
         return {"expired": True}
 
+    @app.get(PREFIX + "/rules", tags=["rules"])
+    def list_rules(
+        q: str = Query("", max_length=200),
+        severity: str = Query("", max_length=20),
+        enabled: bool | None = Query(None),
+        limit: int = Query(50, ge=1, le=200),
+        cursor: str = Query("", max_length=200),
+        principal=Depends(require("rules.read")),
+        db=Depends(db_session),
+    ):
+        query = select(Rule).where(Rule.organization_id == principal.organization_id)
+        if enabled is not None:
+            query = query.where(Rule.enabled == enabled)
+        query = query.order_by(Rule.rule_id.asc())
+        if cursor:
+            query = query.where(Rule.rule_id > cursor)
+        rows = list(db.scalars(query.limit(limit + 1)))
+
+        filtered = []
+        for row in rows:
+            doc = row.document or {}
+            if severity and doc.get("severity") != severity:
+                continue
+            if q:
+                needle = q.casefold()
+                name = str(doc.get("name", "")).casefold()
+                desc = str(doc.get("description", "")).casefold()
+                rid = row.rule_id.casefold()
+                if needle not in rid and needle not in name and needle not in desc:
+                    continue
+            filtered.append(row)
+
+        has_more = len(rows) > limit
+        next_c = rows[limit - 1].rule_id if has_more else None
+        return {
+            "items": [as_dict(r) for r in filtered[:limit]],
+            "next_cursor": next_c,
+            "total": len(filtered),
+        }
+
+    @app.get(PREFIX + "/rules/{rule_id}", tags=["rules"])
+    def get_rule(
+        rule_id: str,
+        principal=Depends(require("rules.read")),
+        db=Depends(db_session),
+    ):
+        row = db.scalar(
+            select(Rule).where(
+                Rule.organization_id == principal.organization_id,
+                (Rule.rule_id == rule_id)
+                | (Rule.id == rule_id)
+                | (Rule.rule_id == f"AEGIS-{rule_id}")
+                | (Rule.rule_id == rule_id.removeprefix("AEGIS-")),
+            )
+        )
+        if not row:
+            raise HTTPException(404, f"Rule '{rule_id}' not found")
+        return as_dict(row)
+
+    @app.post(PREFIX + "/rules/import-sigma", tags=["rules"])
+    def import_sigma(
+        body: dict[str, Any],
+        principal=Depends(require("rules.write")),
+    ):
+        yaml_content = body.get("yaml_rule") or body.get("yaml")
+        if not yaml_content or not isinstance(yaml_content, str):
+            raise HTTPException(422, "Request body must contain 'yaml_rule' string.")
+        if len(yaml_content) > 512_000:
+            raise HTTPException(422, "Sigma YAML content exceeds maximum allowed size of 500 KB.")
+        try:
+            from aegis.sigma import parse_sigma_rule
+
+            rule = parse_sigma_rule(yaml_content)
+            return {"valid": True, "rule": rule.model_dump(mode="json")}
+        except Exception as exc:
+            raise HTTPException(422, f"Sigma import validation error: {exc}") from exc
+
     @app.post(PREFIX + "/rules/validate", tags=["rules"])
     def validate_rule(rule: DetectionRule, principal=Depends(require("rules.read"))):
         return {
@@ -1238,13 +1321,21 @@ def create_app(settings: Settings | None = None):
         principal=Depends(require("rules.write")),
         db=Depends(db_session),
     ):
-        if rule_id != data.document.id:
+        clean_rule_id = rule_id.removeprefix("AEGIS-")
+        clean_doc_id = data.document.id.removeprefix("AEGIS-")
+        if clean_rule_id != clean_doc_id:
             raise HTTPException(422, "Rule path and document ID differ")
         if any(technique not in MITRE for technique in data.document.mitre_techniques):
             raise HTTPException(422, "Technique is absent from the installed ATT&CK catalog")
         row = db.scalar(
             select(Rule)
-            .where(Rule.organization_id == principal.organization_id, Rule.rule_id == rule_id)
+            .where(
+                Rule.organization_id == principal.organization_id,
+                (Rule.rule_id == rule_id)
+                | (Rule.id == rule_id)
+                | (Rule.rule_id == f"AEGIS-{rule_id}")
+                | (Rule.rule_id == clean_rule_id),
+            )
             .with_for_update()
         )
         if row and row.version != data.version:
@@ -1259,6 +1350,8 @@ def create_app(settings: Settings | None = None):
             data.enabled,
             row.version + 1,
         )
+        row.lifecycle_stage = data.lifecycle_stage
+        row.status = "ACTIVE" if data.enabled else "DISABLED"
         db.flush()
         db.add(
             RuleVersion(
@@ -1267,6 +1360,7 @@ def create_app(settings: Settings | None = None):
                 version=row.version,
                 author=principal.user.id,
                 summary=data.summary,
+                lifecycle_stage=data.lifecycle_stage,
                 document=row.document,
             )
         )
@@ -1283,6 +1377,298 @@ def create_app(settings: Settings | None = None):
         db.commit()
         return as_dict(row)
 
+    @app.post(PREFIX + "/rules/{rule_id}/activate", tags=["rules"])
+    def activate_rule(
+        rule_id: str,
+        data: RuleActivateRequest,
+        request: Request,
+        principal=Depends(require("rules.write")),
+        db=Depends(db_session),
+    ):
+        row = db.scalar(
+            select(Rule)
+            .where(
+                Rule.organization_id == principal.organization_id,
+                (Rule.rule_id == rule_id)
+                | (Rule.id == rule_id)
+                | (Rule.rule_id == f"AEGIS-{rule_id}")
+                | (Rule.rule_id == rule_id.removeprefix("AEGIS-")),
+            )
+            .with_for_update()
+        )
+        if not row:
+            raise HTTPException(404, f"Rule '{rule_id}' not found")
+        if row.version != data.version:
+            raise HTTPException(
+                409,
+                f"Rule version conflict: current active version is {row.version}, requested activation for {data.version}. Refresh and retry.",
+            )
+        try:
+            DetectionRule.model_validate(row.document)
+        except Exception as exc:
+            raise HTTPException(422, f"Cannot activate rule with invalid definition: {exc}") from exc
+
+        row.enabled = True
+        row.status = "ACTIVE"
+        row.lifecycle_stage = "ACTIVE"
+        row.activated_at = datetime.now(UTC)
+        row.activated_by = principal.user.id
+        db.flush()
+
+        audit(
+            db,
+            settings,
+            principal.organization_id,
+            principal.user.id,
+            "rules.activate",
+            row.id,
+            details={"version": row.version, "summary": data.summary},
+            request=request,
+        )
+        db.commit()
+        return as_dict(row)
+
+    @app.post(PREFIX + "/rules/{rule_id}/rollback", tags=["rules"])
+    def rollback_rule(
+        rule_id: str,
+        data: RuleRollbackRequest,
+        request: Request,
+        principal=Depends(require("rules.write")),
+        db=Depends(db_session),
+    ):
+        row = db.scalar(
+            select(Rule)
+            .where(
+                Rule.organization_id == principal.organization_id,
+                (Rule.rule_id == rule_id)
+                | (Rule.id == rule_id)
+                | (Rule.rule_id == f"AEGIS-{rule_id}")
+                | (Rule.rule_id == rule_id.removeprefix("AEGIS-")),
+            )
+            .with_for_update()
+        )
+        if not row:
+            raise HTTPException(404, f"Rule '{rule_id}' not found")
+
+        target_version_row = db.scalar(
+            select(RuleVersion).where(
+                RuleVersion.organization_id == principal.organization_id,
+                RuleVersion.rule_id == row.id,
+                RuleVersion.version == data.target_version,
+            )
+        )
+        if not target_version_row:
+            raise HTTPException(404, f"Version {data.target_version} does not exist for rule '{rule_id}'")
+
+        old_version = row.version
+        new_version = row.version + 1
+        row.document = target_version_row.document
+        row.version = new_version
+        row.lifecycle_stage = "ACTIVE"
+        row.status = "ACTIVE"
+        row.activated_at = datetime.now(UTC)
+        row.activated_by = principal.user.id
+        db.flush()
+
+        db.add(
+            RuleVersion(
+                organization_id=principal.organization_id,
+                rule_id=row.id,
+                version=new_version,
+                author=principal.user.id,
+                summary=f"Rollback to v{data.target_version}: {data.summary}",
+                document=row.document,
+                lifecycle_stage="ACTIVE",
+                approved_by=principal.user.id,
+                approved_at=datetime.now(UTC),
+            )
+        )
+
+        audit(
+            db,
+            settings,
+            principal.organization_id,
+            principal.user.id,
+            "rules.rollback",
+            row.id,
+            details={"from_version": old_version, "restored_version": data.target_version, "new_version": new_version},
+            request=request,
+        )
+        db.commit()
+        return as_dict(row)
+
+    @app.post(PREFIX + "/rules/{rule_id}/replay", tags=["replays"])
+    @app.post(PREFIX + "/replays", tags=["replays"])
+    def run_rule_replay(
+        request: Request,
+        data: ReplayRequest,
+        rule_id: str | None = None,
+        principal=Depends(require("rules.execute")),
+        db=Depends(db_session),
+    ):
+        rate_limit(request, f"replay:{principal.user.id}", 20)
+        target_rule_id = rule_id or data.rule_id
+        if not target_rule_id:
+            raise HTTPException(422, "rule_id must be provided in URL path or request body")
+        data.rule_id = target_rule_id
+
+        from aegis.replay import execute_replay
+
+        try:
+            result = execute_replay(
+                db=db,
+                org_id=principal.organization_id,
+                user_id=principal.user.id,
+                request=data,
+            )
+            audit(
+                db,
+                settings,
+                principal.organization_id,
+                principal.user.id,
+                "rules.replay",
+                target_rule_id,
+                details={
+                    "job_id": result["job_id"],
+                    "events_evaluated": result["events_evaluated"],
+                    "matches": len(result["candidate_matches"]),
+                },
+                request=request,
+            )
+            db.commit()
+            return result
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(422, str(exc)) from exc
+        except Exception as exc:
+            db.rollback()
+            raise HTTPException(500, f"Replay execution error: {exc}") from exc
+
+    @app.get(PREFIX + "/rules/{rule_id}/replays", tags=["replays"])
+    def list_rule_replays(
+        rule_id: str,
+        limit: int = Query(20, ge=1, le=100),
+        principal=Depends(require("rules.read")),
+        db=Depends(db_session),
+    ):
+        clean_rule_id = rule_id.removeprefix("AEGIS-")
+        jobs = list(
+            db.scalars(
+                select(ReplayJob)
+                .where(
+                    ReplayJob.organization_id == principal.organization_id,
+                    (ReplayJob.rule_id == rule_id)
+                    | (ReplayJob.rule_id == f"AEGIS-{clean_rule_id}")
+                    | (ReplayJob.rule_id == clean_rule_id),
+                )
+                .order_by(ReplayJob.created_at.desc())
+                .limit(limit)
+            )
+        )
+        return {"items": [as_dict(j) for j in jobs]}
+
+    @app.get(PREFIX + "/replays/{job_id}", tags=["replays"])
+    def get_replay_job(
+        job_id: str,
+        principal=Depends(require("rules.read")),
+        db=Depends(db_session),
+    ):
+        job = db.scalar(
+            select(ReplayJob).where(
+                ReplayJob.organization_id == principal.organization_id,
+                ReplayJob.id == job_id,
+            )
+        )
+        if not job:
+            raise HTTPException(404, f"Replay job '{job_id}' not found")
+        matches = list(
+            db.scalars(
+                select(ReplayMatch)
+                .where(
+                    ReplayMatch.organization_id == principal.organization_id,
+                    ReplayMatch.job_id == job_id,
+                )
+                .limit(100)
+            )
+        )
+        res = as_dict(job)
+        res["matches"] = [as_dict(m) for m in matches]
+        return res
+
+    @app.get(PREFIX + "/coverage/mitre", tags=["mitre"])
+    def get_mitre_coverage_endpoint(
+        principal=Depends(require("mitre.read")),
+        db=Depends(db_session),
+    ):
+        from aegis.replay import calculate_mitre_coverage
+
+        return calculate_mitre_coverage(db, principal.organization_id)
+
+    @app.post(PREFIX + "/replays/{job_id}/ai-explain", tags=["replays"])
+    def explain_replay_with_ai(
+        job_id: str,
+        request: Request,
+        principal=Depends(require("rules.read")),
+        db=Depends(db_session),
+    ):
+        rate_limit(request, f"ai-explain:{principal.user.id}", 10)
+        job = db.scalar(
+            select(ReplayJob).where(
+                ReplayJob.organization_id == principal.organization_id,
+                ReplayJob.id == job_id,
+            )
+        )
+        if not job:
+            raise HTTPException(404, f"Replay job '{job_id}' not found")
+
+        matches = list(
+            db.scalars(
+                select(ReplayMatch)
+                .where(
+                    ReplayMatch.organization_id == principal.organization_id,
+                    ReplayMatch.job_id == job_id,
+                )
+                .limit(20)
+            )
+        )
+
+        investigation_payload = {
+            "alerts": [
+                {
+                    "id": job.id,
+                    "rule_id": job.rule_id,
+                    "severity": "high",
+                    "risk_score": 75,
+                }
+            ],
+            "evidence": [
+                {
+                    "event": {
+                        "event_id": m.event_id,
+                        "timestamp": str(m.event_snapshot.get("timestamp", "")),
+                        "event_category": str(m.event_snapshot.get("event_category", "other")),
+                        "action": str(m.event_snapshot.get("action", "observe")),
+                        "outcome": str(m.event_snapshot.get("outcome", "unknown")),
+                    }
+                }
+                for m in matches
+            ],
+        }
+        try:
+            analysis = analyze_with_fallback(settings, investigation_payload)
+            explanation_data = analysis.model_dump(mode="json")
+        except Exception as exc:
+            explanation_data = {"error": f"AI analysis unavailable: {exc}"}
+
+        return {
+            "job_id": job_id,
+            "rule_id": job.rule_id,
+            "explanation": explanation_data,
+            "evidence_event_ids": [m.event_id for m in matches],
+            "candidate_version": job.candidate_version,
+            "active_version": job.active_version,
+        }
+
     @app.get(PREFIX + "/rules/{rule_id}/versions", tags=["rules"])
     def rule_versions(
         rule_id: str,
@@ -1291,7 +1677,17 @@ def create_app(settings: Settings | None = None):
         principal=Depends(require("rules.read")),
         db=Depends(db_session),
     ):
-        row = owned(db, Rule, rule_id, principal.organization_id)
+        row = db.scalar(
+            select(Rule).where(
+                Rule.organization_id == principal.organization_id,
+                (Rule.rule_id == rule_id)
+                | (Rule.id == rule_id)
+                | (Rule.rule_id == f"AEGIS-{rule_id}")
+                | (Rule.rule_id == rule_id.removeprefix("AEGIS-")),
+            )
+        )
+        if not row:
+            raise HTTPException(404, f"Rule '{rule_id}' not found")
         versions = list(
             db.scalars(
                 select(RuleVersion)

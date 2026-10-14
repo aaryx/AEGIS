@@ -10,6 +10,7 @@ import { Badge, DataTable, JsonView, State } from "./ui";
 import { Investigation } from "./investigation";
 import { ResourceEditor } from "./editor";
 import { IntegrationsPanel } from "./integrations";
+import { DetectionLab } from "./detection_lab";
 import { pageHash, parseLocation } from "@/lib/navigation";
 
 const navIcons: Record<string, React.ReactNode> = {
@@ -108,7 +109,9 @@ function Workspace() {
           page === "Dashboard" ? <Dashboard onOpen={open} navigate={navigate} /> :
           ["Threat Hunting", "Events"].includes(page) ? <Hunting onOpen={row => open("events", row)} /> :
           page === "System Health" ? <Health /> : page === "Settings" ? <><SettingsPanel user={user.data} />{user.data.permissions.includes("integrations.manage") && <IntegrationsPanel />}</> :
-          page === "MITRE ATT&CK" ? <Mitre /> : <ResourceList resource={resources[page]} user={user.data} onOpen={row => open(resources[page], row)} />}
+          page === "MITRE ATT&CK" ? <Mitre /> :
+          page === "Detection Rules" ? <DetectionLab user={user.data} onOpen={open} /> :
+          <ResourceList resource={resources[page]} user={user.data} onOpen={row => open(resources[page], row)} />}
       </main>
       <footer className="footer"><span>AEGIS / Security Intelligence & Operations</span><span>Evidence first. Analyst controlled.</span></footer>
     </div>

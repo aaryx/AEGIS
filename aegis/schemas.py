@@ -128,7 +128,18 @@ FIELDS = {
     "metadata.ioc_match",
     "metadata.asset_criticality",
 }
-ALIASES = {"event.category": "event_category", "event.type": "event_type", "user.name": "username"}
+ALIASES = {
+    "event.category": "event_category",
+    "event.type": "event_type",
+    "event.action": "action",
+    "event.outcome": "outcome",
+    "user.name": "username",
+    "process.executable": "process.name",
+    "file.name": "file.path",
+    "source.ip": "source_ip",
+    "destination.ip": "destination_ip",
+    "destination.port": "destination_port",
+}
 
 
 def get_field(event: dict, field: str) -> Any:
@@ -140,15 +151,15 @@ def get_field(event: dict, field: str) -> Any:
 
 class Predicate(StrictModel):
     field: str
-    op: Literal["eq", "ne", "in", "contains", "gte", "lte", "exists"] = "eq"
-    value: str | int | float | bool | list[str | int] | None = None
+    op: Literal["eq", "ne", "in", "contains", "gte", "lte", "exists", "startswith", "endswith"] = "eq"
+    value: str | int | float | bool | list[str | int] | list[str] | None = None
 
     @field_validator("field")
     @classmethod
     def known_field(cls, value):
         value = ALIASES.get(value, value)
         if value not in FIELDS:
-            raise ValueError("Unsupported field")
+            raise ValueError(f"Unsupported field: {value}")
         return value
 
     @model_validator(mode="after")
@@ -159,8 +170,12 @@ class Predicate(StrictModel):
             not isinstance(self.value, (int, float)) or isinstance(self.value, bool)
         ):
             raise ValueError("Numeric comparison requires a number")
-        if self.op == "contains" and not isinstance(self.value, str):
-            raise ValueError("contains requires text")
+        if self.op in {"contains", "startswith", "endswith"}:
+            if isinstance(self.value, list):
+                if not self.value or len(self.value) > 100 or not all(isinstance(v, str) for v in self.value):
+                    raise ValueError(f"{self.op} list requires 1-100 string values")
+            elif not isinstance(self.value, str):
+                raise ValueError(f"{self.op} requires text or list of text")
         return self
 
     def matches(self, event: dict) -> bool:
@@ -173,7 +188,26 @@ class Predicate(StrictModel):
             case "in":
                 return actual in self.value if isinstance(self.value, list) else False
             case "contains":
-                return isinstance(actual, str) and str(self.value).casefold() in actual.casefold()
+                if not isinstance(actual, str):
+                    return False
+                if isinstance(self.value, list):
+                    actual_lower = actual.casefold()
+                    return any(isinstance(v, str) and v.casefold() in actual_lower for v in self.value)
+                return str(self.value).casefold() in actual.casefold()
+            case "startswith":
+                if not isinstance(actual, str):
+                    return False
+                if isinstance(self.value, list):
+                    actual_lower = actual.casefold()
+                    return any(isinstance(v, str) and actual_lower.startswith(v.casefold()) for v in self.value)
+                return actual.casefold().startswith(str(self.value).casefold())
+            case "endswith":
+                if not isinstance(actual, str):
+                    return False
+                if isinstance(self.value, list):
+                    actual_lower = actual.casefold()
+                    return any(isinstance(v, str) and actual_lower.endswith(v.casefold()) for v in self.value)
+                return actual.casefold().endswith(str(self.value).casefold())
             case "gte":
                 return (
                     isinstance(actual, (int, float))
@@ -195,6 +229,7 @@ class Predicate(StrictModel):
         return False
 
 
+
 class Condition(StrictModel):
     type: Literal["match", "threshold", "sequence", "aggregation", "anomaly", "beacon"] = "match"
     count: int = Field(1, ge=1, le=10000)
@@ -211,6 +246,7 @@ class Condition(StrictModel):
     @model_validator(mode="after")
     def supported(self):
         for name in self.group_by + [f for f in (self.distinct_field, self.sum_field) if f]:
+            name = ALIASES.get(name, name)
             if name not in FIELDS:
                 raise ValueError(f"Unsupported field: {name}")
         if self.type == "sequence" and (len(self.sequence) < 2 or any(not step for step in self.sequence)):
@@ -233,6 +269,11 @@ class DetectionRule(StrictModel):
     id: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_-]{2,79}$")
     name: str = Field(min_length=5, max_length=300)
     description: str = Field(min_length=10, max_length=2000)
+    author: str = Field(default="AEGIS Detection Engineering", max_length=100)
+    version: int = Field(default=1, ge=1)
+    status: Literal["ACTIVE", "DRAFT", "DISABLED", "DEPRECATED"] = "ACTIVE"
+    lifecycle_stage: Literal["DRAFT", "VALIDATED", "REPLAYED", "REVIEWED", "ACTIVE"] = "ACTIVE"
+    data_source_requirements: list[str] = Field(default_factory=list, max_length=20)
     selection: list[Predicate] = Field(min_length=1, max_length=30)
     condition: Condition = Field(default_factory=Condition)
     severity: Severity = "medium"
@@ -251,6 +292,40 @@ class DetectionRule(StrictModel):
         if any(not re.fullmatch(r"T\d{4}(?:\.\d{3})?", value) for value in values):
             raise ValueError("Invalid ATT&CK technique identifier")
         return values
+
+
+class ReplayRequest(StrictModel):
+    rule_id: str | None = Field(default=None, pattern=r"^[A-Z0-9][A-Z0-9_-]{2,79}$")
+    candidate_document: DetectionRule | None = None
+    target_type: Literal["EVENTS", "TIMERANGE", "DATASET"] = "DATASET"
+    event_ids: list[str] = Field(default_factory=list, max_length=5000)
+    dataset_name: str | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    filter_query: str | None = None
+    max_events: int = Field(5000, ge=1, le=50000)
+    dry_run: bool = True
+
+    @model_validator(mode="after")
+    def validate_replay_request(self):
+        if self.target_type == "EVENTS" and not self.event_ids:
+            raise ValueError("Replay with target_type='EVENTS' requires at least one event_id in 'event_ids'")
+        if self.start_time and self.end_time:
+            st = self.start_time if self.start_time.tzinfo else self.start_time.replace(tzinfo=UTC)
+            et = self.end_time if self.end_time.tzinfo else self.end_time.replace(tzinfo=UTC)
+            if et < st:
+                raise ValueError("end_time cannot be earlier than start_time")
+        return self
+
+
+class RuleRollbackRequest(StrictModel):
+    target_version: int = Field(ge=1)
+    summary: str = Field(min_length=5, max_length=500)
+
+
+class RuleActivateRequest(StrictModel):
+    version: int = Field(ge=1)
+    summary: str = Field(default="Approved and activated rule", min_length=3, max_length=500)
 
 
 class SearchQuery(StrictModel):

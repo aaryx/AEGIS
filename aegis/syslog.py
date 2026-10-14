@@ -147,11 +147,15 @@ class SyslogServer:
         if self.protocol == "udp":
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._socket.bind((self.host, self.port))
+            if self.port == 0:
+                self.port = self._socket.getsockname()[1]
             self._thread = threading.Thread(target=self._run_udp, daemon=True)
         elif self.protocol == "tcp":
             raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             raw_sock.bind((self.host, self.port))
+            if self.port == 0:
+                self.port = raw_sock.getsockname()[1]
             raw_sock.listen(50)
             if self.ssl_context:
                 self._socket = self.ssl_context.wrap_socket(raw_sock, server_side=True)

@@ -26,6 +26,7 @@ jobs:
       - run: cd web && npx playwright install --with-deps chromium
       - run: python scripts/e2e.py
       - run: docker compose up -d --build --wait
+      - run: python scripts/dev.py integration
       - run: python scripts/acceptance.py
       - run: docker compose exec -T api python scripts/integration_checks.py
       - run: python scripts/recovery_drill.py

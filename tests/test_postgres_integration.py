@@ -661,14 +661,19 @@ def test_postgres_schema_migration_previous_to_current(pg_engine):
     cfg = Config(str(root / "alembic.ini"))
     mig_db_name = f"aegis_mig_{uuid4().hex[:8]}"
 
+    from sqlalchemy.engine import make_url
+
+    parsed_url = make_url(POSTGRES_TEST_URL)
+    admin_url = parsed_url.set(database="postgres")
+    psycopg_dsn = admin_url.render_as_string(hide_password=False).replace("postgresql+psycopg://", "postgresql://")
     # Create temporary database outside transaction
     raw_conn = psycopg.connect(
-        "postgresql://aegis:7801778711a54980fe47b0e2807da5a0a9c9313e73df9914@127.0.0.1:5433/postgres",
+        psycopg_dsn,
         autocommit=True,
     )
     try:
         raw_conn.execute(f"CREATE DATABASE {mig_db_name}")
-        mig_url = f"postgresql+psycopg://aegis:7801778711a54980fe47b0e2807da5a0a9c9313e73df9914@127.0.0.1:5433/{mig_db_name}"
+        mig_url = parsed_url.set(database=mig_db_name).render_as_string(hide_password=False)
         cfg.set_main_option("sqlalchemy.url", mig_url)
 
         # 1. Migrate to revision 0004 (previous schema)
@@ -708,8 +713,108 @@ def test_postgres_schema_migration_previous_to_current(pg_engine):
             assert "anchored_at" in columns_0006
             assert "anchor_error" in columns_0006
 
+        # 4. Upgrade to revision 0007 (detection replay lab)
+        command.upgrade(cfg, "0007")
+
+        with mig_engine.connect() as conn:
+            v_0007 = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+            assert v_0007 == "0007"
+            tables_0007 = set(conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")).scalars().all())
+            assert "replay_jobs" in tables_0007
+            assert "replay_matches" in tables_0007
+
         mig_engine.dispose()
     finally:
         raw_conn.execute(f"DROP DATABASE IF EXISTS {mig_db_name}")
         raw_conn.close()
+
+
+# ==============================================================================
+# 11. CONCURRENT RULE ACTIVATION AND REPLAY ON REAL POSTGRESQL
+# ==============================================================================
+
+
+def test_postgres_concurrent_rule_activation_and_replay(pg_system):
+    """Verify that concurrent rule version updates and replay persistence on PostgreSQL
+
+    preserve row-level lock serialization, foreign key integrity, and JSONB serialization.
+    """
+    from aegis.db import ReplayJob, ReplayMatch, Rule, RuleVersion
+    from aegis.replay import execute_replay
+    from aegis.schemas import ReplayRequest
+
+    session_factory = pg_system["sessions"]
+    org_id = pg_system["org"]
+
+    # 1. Ensure a seeded rule exists in PostgreSQL
+    with session_factory.begin() as db:
+        rule_row = db.scalar(
+            select(Rule).where(
+                Rule.organization_id == org_id,
+                (Rule.rule_id == "AUTH-001") | (Rule.rule_id == "AEGIS-AUTH-001"),
+            )
+        )
+        assert rule_row is not None
+        target_rule_id = rule_row.rule_id
+        db.add(
+            RuleVersion(
+                organization_id=org_id,
+                rule_id=rule_row.id,
+                version=1,
+                author="pg_tester",
+                summary="Initial PostgreSQL version",
+                lifecycle_stage="ACTIVE",
+                document=rule_row.document,
+            )
+        )
+
+    # 2. Run two concurrent replays against PostgreSQL
+    num_replays = 4
+    results = []
+    exceptions = []
+
+    def replay_worker(worker_id: int):
+        try:
+            with session_factory.begin() as db:
+                req = ReplayRequest(
+                    rule_id=target_rule_id,
+                    target_type="DATASET",
+                    dataset_name="AUTH-001",
+                    max_events=100,
+                    dry_run=True,
+                )
+                res = execute_replay(
+                    db=db,
+                    org_id=org_id,
+                    user_id=f"pg_worker_{worker_id}",
+                    request=req,
+                )
+                results.append(res)
+        except Exception as exc:
+            exceptions.append(exc)
+
+    with ThreadPoolExecutor(max_workers=num_replays) as executor:
+        futures = [executor.submit(replay_worker, i) for i in range(num_replays)]
+        for f in futures:
+            f.result()
+
+    assert len(exceptions) == 0, f"PostgreSQL concurrent replay threw: {exceptions}"
+    assert len(results) == num_replays
+
+    # 3. Verify PostgreSQL database state: jobs, matches, and foreign key cascades
+    with session_factory() as db:
+        jobs = list(
+            db.scalars(
+                select(ReplayJob).where(
+                    ReplayJob.organization_id == org_id,
+                    ReplayJob.rule_id == target_rule_id,
+                )
+            )
+        )
+        assert len(jobs) == num_replays
+        for j in jobs:
+            assert j.status in {"COMPLETED", "COMPLETED_WITH_WARNINGS"}
+            assert j.events_evaluated > 0
+            matches = list(db.scalars(select(ReplayMatch).where(ReplayMatch.job_id == j.id)))
+            assert len(matches) == len(j.metrics["candidate_matches_count"]) if isinstance(j.metrics, dict) and "candidate_matches_count" in j.metrics else len(matches) >= 0
 

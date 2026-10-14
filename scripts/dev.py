@@ -17,7 +17,7 @@ def run(command, cwd=ROOT):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "command", choices=["install", "dev", "test", "lint", "format", "typecheck", "security", "build"]
+        "command", choices=["install", "dev", "test", "integration", "lint", "format", "typecheck", "security", "build"]
     )
     args = parser.parse_args()
     match args.command:
@@ -56,6 +56,8 @@ def main():
         case "test":
             run([sys.executable, "-m", "pytest"])
             run([NPM, "test"], ROOT / "web")
+        case "integration":
+            run([sys.executable, "scripts/integration_gate.py"])
         case "lint":
             run([sys.executable, "-m", "ruff", "check", "aegis", "tests", "scripts"])
             run([NPM, "run", "typecheck"], ROOT / "web")
