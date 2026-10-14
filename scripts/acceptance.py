@@ -58,7 +58,8 @@ def main():
         # 4. Smoke Check: Detection Rules and MITRE Coverage
         rules_response = client.get("rules")
         rules_response.raise_for_status()
-        rules_list = rules_response.json()
+        rules_data = rules_response.json()
+        rules_list = rules_data.get("items", rules_data) if isinstance(rules_data, dict) else rules_data
         if not any(r.get("rule_id") in ("AUTH-001", "AEGIS-AUTH-001") for r in rules_list):
             raise RuntimeError("Baseline detection rule AUTH-001 missing from rules list")
 
