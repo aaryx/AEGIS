@@ -485,16 +485,28 @@ export function DetectionLab({
                               />
                             </td>
                             <td>
-                              <button
-                                className="text-button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedRuleId(String(rule.rule_id));
-                                  setActiveTab("replay");
-                                }}
-                              >
-                                Replay →
-                              </button>
+                              <div style={{ display: "flex", gap: "6px" }}>
+                                <button
+                                  className="text-button"
+                                  aria-label={`Open ${display(doc.name || rule.rule_id || rule.id)}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onOpen("rules", rule);
+                                  }}
+                                >
+                                  Open ↗
+                                </button>
+                                <button
+                                  className="text-button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedRuleId(String(rule.rule_id));
+                                    setActiveTab("replay");
+                                  }}
+                                >
+                                  Replay →
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -513,6 +525,13 @@ export function DetectionLab({
                     <FileCode size={17} /> {String(activeRule.rule_id)}
                   </h2>
                   <div className="actions">
+                    <button
+                      className="text-button"
+                      aria-label={`Open ${display((activeRule.document as Row)?.name || activeRule.rule_id || activeRule.id)}`}
+                      onClick={() => onOpen("rules", activeRule)}
+                    >
+                      Open in Editor ↗
+                    </button>
                     <button
                       className="primary"
                       onClick={() => setActiveTab("replay")}
