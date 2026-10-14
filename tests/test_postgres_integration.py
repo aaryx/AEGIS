@@ -41,6 +41,7 @@ from aegis.storage import LocalStorage
 from aegis.worker import process_once
 
 POSTGRES_TEST_URL = os.environ.get("AEGIS_POSTGRES_TEST_URL")
+AUDIT_SECRET = os.environ.get("AUDIT_SECRET", "pg-test-audit-integrity-key-32chars-min")
 
 
 @pytest.fixture(scope="module")
@@ -73,7 +74,7 @@ def pg_system(pg_engine, pg_session_factory):
     settings = Settings(
         environment="testing",
         database_url=POSTGRES_TEST_URL,
-        audit_secret="pg-test-audit-integrity-key-32chars-min",
+        audit_secret=AUDIT_SECRET,
         _env_file=None,
     )
     with pg_session_factory.begin() as db:
@@ -144,7 +145,7 @@ def _mp_audit_worker(args: tuple[str, str, int]) -> bool:
     worker_settings = Settings(
         environment="testing",
         database_url=url,
-        audit_secret="pg-test-audit-integrity-key-32chars-min",
+        audit_secret=AUDIT_SECRET,
         _env_file=None,
     )
     with session_maker.begin() as db:
@@ -469,7 +470,7 @@ def test_postgres_multi_tenant_concurrent_audit_isolation(pg_engine, pg_session_
     settings = Settings(
         environment="testing",
         database_url=POSTGRES_TEST_URL,
-        audit_secret="pg-test-audit-integrity-key-32chars-min",
+        audit_secret=AUDIT_SECRET,
         _env_file=None,
     )
     with pg_session_factory.begin() as db:

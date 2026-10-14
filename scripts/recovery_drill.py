@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess  # nosec B404
+import sys
 import time
 from pathlib import Path
 from uuid import uuid4
@@ -63,18 +64,25 @@ with Session(engine) as db:
         if digest(event.payload['raw_event']) != event.evidence_hash: raise RuntimeError('Evidence hash mismatch')
         count+=1
     for org in db.scalars(select(Organization)):
-        if not verify_audit(db, settings, org.id): raise RuntimeError('Audit chain mismatch')
+        if not verify_audit(db, settings, org.id): raise RuntimeError(f'Audit chain mismatch for org {org.id} ({org.name})')
     checkpoints_count = 0
     inspector = inspect(engine)
     if 'audit_checkpoints' in inspector.get_table_names():
         checkpoints_count = db.scalar(text('SELECT count(*) FROM audit_checkpoints')) or 0
     print(json.dumps({'verified_events':count,'audit_chains':'valid','checkpoints_count':checkpoints_count}))
 """
-        result = run(
-            ["run", "--rm", "--no-deps", "-e", "RESTORE_DATABASE=" + database_name, "initialize", "python", "-c", verification],
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = run(
+                ["run", "--rm", "--no-deps", "-e", "RESTORE_DATABASE=" + database_name, "initialize", "python", "-c", verification],
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            if exc.stdout:
+                sys.stdout.write(f"Verification STDOUT:\n{exc.stdout}\n")
+            if exc.stderr:
+                sys.stderr.write(f"Verification STDERR:\n{exc.stderr}\n")
+            raise
         verification_result = json.loads(result.stdout)
         with archive.open("rb") as stream:
             checksum = hashlib.file_digest(stream, "sha256").hexdigest()

@@ -93,6 +93,7 @@ def main() -> None:
             "OPENSEARCH_URL": "http://127.0.0.1:9200",
             "OPENSEARCH_USERNAME": "aegis",
             "OPENSEARCH_PASSWORD": opensearch_pass,
+            "AUDIT_SECRET": config.get("AUDIT_SECRET") or "pg-test-audit-integrity-key-32chars-min",
             "AEGIS_INTEGRATION": "1",
         }
     )
