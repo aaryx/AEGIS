@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 MANDATORY_INTEGRATION_TESTS = {
+    "test_postgres_concurrent_storyline_correlation",
     # PostgreSQL Concurrency & Isolation Suite (tests/test_postgres_integration.py)
     "test_postgres_concurrent_rate_limiting",
     "test_postgres_multiprocess_concurrent_audit_writes",

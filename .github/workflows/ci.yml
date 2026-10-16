@@ -37,9 +37,20 @@ jobs:
       - name: Scan web image
         uses: aquasecurity/trivy-action@0.35.0
         with: {image-ref: 'aegis-web:local', format: table, exit-code: '1', severity: 'HIGH,CRITICAL', ignore-unfixed: true}
-      - name: SBOM
+      - name: API SBOM
         uses: anchore/sbom-action@v0
         with: {image: 'aegis-api:local', format: cyclonedx-json, output-file: aegis-api.cdx.json}
+      - name: Web SBOM
+        uses: anchore/sbom-action@v0
+        with: {image: 'aegis-web:local', format: cyclonedx-json, output-file: aegis-web.cdx.json}
+      - name: Retain image SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-sboms
+          path: |
+            aegis-api.cdx.json
+            aegis-web.cdx.json
+          if-no-files-found: error
       - name: Secret scan
         uses: gitleaks/gitleaks-action@v2
       - if: always()

@@ -1,14 +1,14 @@
 """Negative, boundary, and failure-mode validation for CI release gate (scripts/integration_gate.py).
 
 Validates:
-1. All services healthy and all 13 tests passing -> Gate PASSES (exit 0).
+1. All services healthy and all 14 tests passing -> Gate PASSES (exit 0).
 2. PostgreSQL unavailable -> Gate FAILS (exit 1).
 3. Redis unavailable -> Gate FAILS (exit 1).
 4. OpenSearch unavailable -> Gate FAILS (exit 1).
 5. Missing required configuration (.env absent or credentials missing) -> Gate FAILS (exit 1).
 6. Deliberately failing integration test -> Gate FAILS (exit 1).
 7. Deliberately skipped mandatory test -> Gate FAILS (exit 1).
-8. No tests collected (passed < 13) -> Gate FAILS (exit 1).
+8. No tests collected (passed < 14) -> Gate FAILS (exit 1).
 9. Malformed or unexpected pytest output -> Gate FAILS (exit 1).
 10. Pytest error during execution -> Gate FAILS (exit 1).
 11. Secret preservation: Credentials are NEVER printed to stdout/stderr.
@@ -151,7 +151,7 @@ def test_gate_fails_when_mandatory_test_skipped(mock_env_config, monkeypatch, ca
 
 
 def test_gate_fails_when_no_tests_collected(mock_env_config, monkeypatch, capsys):
-    """Condition: Pytest collects zero tests or fewer than 13 tests."""
+    """Condition: Pytest collects zero tests or fewer than 14 tests."""
     monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
 
     mock_process = MagicMock()
@@ -166,7 +166,7 @@ def test_gate_fails_when_no_tests_collected(mock_env_config, monkeypatch, capsys
 
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
-    assert "RELEASE GATE FAILED: Expected at least 13 integration tests, got 0." in captured.err
+    assert "RELEASE GATE FAILED: Expected at least 14 integration tests, got 0." in captured.err
 
 
 def test_gate_fails_when_pytest_output_malformed(mock_env_config, monkeypatch, capsys):
@@ -207,7 +207,7 @@ def test_gate_fails_when_pytest_reports_error(mock_env_config, monkeypatch, caps
     assert "RELEASE GATE FAILED: Integration tests encountered failures or errors." in captured.err
 
 
-ALL_13_PASSED_STDOUT = (
+ALL_14_PASSED_STDOUT = (
     "tests/test_postgres_integration.py::test_postgres_concurrent_rate_limiting PASSED\n"
     "tests/test_postgres_integration.py::test_postgres_multiprocess_concurrent_audit_writes PASSED\n"
     "tests/test_postgres_integration.py::test_postgres_concurrent_audit_writes_and_chain_integrity PASSED\n"
@@ -220,24 +220,25 @@ ALL_13_PASSED_STDOUT = (
     "tests/test_postgres_integration.py::test_postgres_lock_timeout_and_abort_recovery PASSED\n"
     "tests/test_postgres_integration.py::test_postgres_schema_migration_previous_to_current PASSED\n"
     "tests/test_postgres_integration.py::test_postgres_concurrent_rule_activation_and_replay PASSED\n"
+    "tests/test_postgres_integration.py::test_postgres_concurrent_storyline_correlation PASSED\n"
     "tests/test_integration.py::test_real_dependency_connectivity PASSED\n"
-    "=================== 13 passed in 15.20s ===================\n"
+    "=================== 14 passed in 15.20s ===================\n"
 )
 
 
-def test_gate_succeeds_when_all_healthy_and_13_pass(mock_env_config, monkeypatch, capsys):
-    """Condition: All services healthy and all 13 tests pass cleanly (Happy Path)."""
+def test_gate_succeeds_when_all_healthy_and_14_pass(mock_env_config, monkeypatch, capsys):
+    """Condition: All services healthy and all 14 tests pass cleanly (Happy Path)."""
     monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
 
     mock_process = MagicMock()
     mock_process.returncode = 0
-    mock_process.stdout = io.StringIO(ALL_13_PASSED_STDOUT)
+    mock_process.stdout = io.StringIO(ALL_14_PASSED_STDOUT)
 
     with patch("subprocess.Popen", return_value=mock_process):
         integration_gate.main()
 
     captured = capsys.readouterr()
-    assert "Passed:     13" in captured.out
+    assert "Passed:     14" in captured.out
     assert "Failed:     0" in captured.out
     assert "Skipped:    0" in captured.out
     assert "Deselected: 0" in captured.out
@@ -265,10 +266,10 @@ def test_gate_fails_when_mandatory_test_deselected(mock_env_config, monkeypatch,
 
 
 def test_gate_fails_when_mandatory_test_renamed_or_missing(mock_env_config, monkeypatch, capsys):
-    """Condition: 13 tests pass but a required mandatory test was renamed/omitted and replaced with dummy."""
+    """Condition: 14 tests pass but a required mandatory test was renamed/omitted and replaced with dummy."""
     monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
 
-    # 13 tests pass, but test_real_dependency_connectivity is missing, replaced by test_dummy_extra
+    # 14 tests pass, but test_real_dependency_connectivity is missing, replaced by test_dummy_extra
     tampered_stdout = (
         "tests/test_postgres_integration.py::test_postgres_concurrent_rate_limiting PASSED\n"
         "tests/test_postgres_integration.py::test_postgres_multiprocess_concurrent_audit_writes PASSED\n"
@@ -282,8 +283,9 @@ def test_gate_fails_when_mandatory_test_renamed_or_missing(mock_env_config, monk
         "tests/test_postgres_integration.py::test_postgres_lock_timeout_and_abort_recovery PASSED\n"
         "tests/test_postgres_integration.py::test_postgres_schema_migration_previous_to_current PASSED\n"
         "tests/test_postgres_integration.py::test_postgres_concurrent_rule_activation_and_replay PASSED\n"
+        "tests/test_postgres_integration.py::test_postgres_concurrent_storyline_correlation PASSED\n"
         "tests/test_integration.py::test_dummy_extra PASSED\n"
-        "=================== 13 passed in 15.20s ===================\n"
+        "=================== 14 passed in 15.20s ===================\n"
     )
 
     mock_process = MagicMock()
@@ -307,7 +309,7 @@ def test_gate_never_leaks_secrets_in_console_output(mock_env_config, monkeypatch
 
     mock_process = MagicMock()
     mock_process.returncode = 0
-    mock_process.stdout = io.StringIO(ALL_13_PASSED_STDOUT)
+    mock_process.stdout = io.StringIO(ALL_14_PASSED_STDOUT)
 
     with patch("subprocess.Popen", return_value=mock_process):
         integration_gate.main()

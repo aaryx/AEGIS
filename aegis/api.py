@@ -60,6 +60,7 @@ from aegis.db import (
     SavedSearch,
     SearchJob,
     SessionToken,
+    Storyline,
     User,
     WorkerHeartbeat,
     as_dict,
@@ -114,6 +115,8 @@ from aegis.security import (
     verify_audit,
 )
 from aegis.storage import LocalStorage, OpenSearchStorage
+from aegis.storylines import correlate
+from aegis.storylines import detail as storyline_detail
 
 logger = logging.getLogger("aegis.api")
 PREFIX = "/api/v1"
@@ -899,6 +902,49 @@ def create_app(settings: Settings | None = None):
     def event_detail(event_id: str, principal=Depends(require("events.read")), db=Depends(db_session)):
         row = owned(db, EventRecord, event_id, principal.organization_id)
         return {"event": row.payload, "evidence_hash": row.evidence_hash, "state": row.state}
+
+    @app.post(PREFIX + "/storylines/correlate", tags=["storylines"])
+    def correlate_storylines(
+        window_seconds: int = Query(1800, ge=1, le=86400),
+        principal=Depends(require("incidents.create")), db=Depends(db_session),
+    ):
+        require_evidence_scope(principal)
+        if "incidents.update" not in principal.permissions:
+            raise HTTPException(403, "Permission denied")
+        result = correlate(db, settings, principal, window_seconds)
+        db.commit()
+        return result
+
+    @app.get(PREFIX + "/storylines", tags=["storylines"])
+    def list_storylines(
+        limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
+        status: str = "", severity: str = "",
+        principal=Depends(require("incidents.read")), db=Depends(db_session),
+    ):
+        require_evidence_scope(principal)
+        query = select(Storyline, Incident).join(Incident, Storyline.incident_id == Incident.id).where(
+            Storyline.organization_id == principal.organization_id,
+            Incident.organization_id == principal.organization_id,
+        )
+        if status:
+            query = query.where(Incident.status == status)
+        if severity:
+            query = query.where(Incident.severity == severity)
+        rows = db.execute(query.order_by(Storyline.created_at.desc(), Storyline.id)
+                          .offset(offset).limit(limit + 1)).all()
+        return {"items": [as_dict(s) | {"status": i.status, "severity": i.severity, "title": i.title}
+                          for s, i in rows[:limit]],
+                "next_offset": offset + limit if len(rows) > limit else None}
+
+    @app.get(PREFIX + "/storylines/{storyline_id}", tags=["storylines"])
+    def get_storyline(storyline_id: str, principal=Depends(require("incidents.read")),
+                      db=Depends(db_session)):
+        require_evidence_scope(principal)
+        story = owned(db, Storyline, storyline_id, principal.organization_id)
+        result = storyline_detail(db, principal.organization_id, story)
+        if "audit.read" not in principal.permissions:
+            result["investigation"]["activity"] = []
+        return result
 
     @app.get(PREFIX + "/investigations/{resource_id}", tags=["investigations"])
     def investigation(resource_id: str, principal=Depends(require("events.read")), db=Depends(db_session)):

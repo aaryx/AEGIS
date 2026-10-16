@@ -50,6 +50,25 @@ test("analyst follows real evidence from dashboard through report", async ({ pag
   await page.getByRole("button", { name: /Open / }).first().click();
   await page.getByRole("button", { name: "Validate", exact: true }).click();
   await expect(page.locator("pre").filter({ hasText: '"valid": true' })).toBeVisible();
+  await page.getByRole("navigation").getByRole("button", { name: "Storylines", exact: true }).click();
+  await page.getByRole("button", { name: "Correlate alerts", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("storylines updated");
+  await page.getByRole("button", { name: /Open Attack storyline/ }).first().click();
+  await expect(page.getByText("Detection timeline and correlation evidence")).toBeVisible();
+  await expect(page.getByText(/Shared host:/).first()).toBeVisible();
+  await page.getByRole("button", { name: "Investigate incident", exact: true }).click();
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  await page.getByLabel("Add a note").fill("Storyline evidence verified in browser acceptance");
+  await page.getByRole("button", { name: "Add note", exact: true }).click();
+  await expect(page.getByText("Storyline evidence verified in browser acceptance", { exact: true })).toBeVisible();
+  for (const status of ["TRIAGED", "INVESTIGATING", "CONTAINMENT", "ERADICATION", "RECOVERY", "RESOLVED"]) {
+    if (status === "RESOLVED") page.once("dialog", dialog => dialog.accept("Synthetic exercise resolved"));
+    const response = page.waitForResponse(r => r.url().endsWith("/status") && r.request().method() === "PATCH");
+    await page.getByLabel("Update status").selectOption(status);
+    expect((await response).status()).toBe(200);
+    await expect(page.getByLabel("Update status")).toHaveValue(status);
+    await expect(page.getByLabel("Update status")).toBeEnabled();
+  }
   await page.getByRole("navigation").getByRole("button", { name: "Settings", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Integrations & delivery" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Notification delivery queue" })).toBeVisible();

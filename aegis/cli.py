@@ -288,6 +288,27 @@ groups = {
 }
 
 
+storylines_app = typer.Typer(help="Correlate and investigate persisted alert storylines.")
+app.add_typer(storylines_app, name="storylines")
+
+
+@storylines_app.command("list")
+def storyline_list(ctx: typer.Context, limit: int = 50, offset: int = 0,
+                   status: str = "", severity: str = ""):
+    output(ctx, call(ctx, "GET", "storylines", params={"limit": limit, "offset": offset,
+                                                       "status": status, "severity": severity}))
+
+
+@storylines_app.command("show")
+def storyline_show(ctx: typer.Context, identifier: str):
+    output(ctx, call(ctx, "GET", f"storylines/{identifier}"))
+
+
+@storylines_app.command("correlate")
+def storyline_correlate(ctx: typer.Context, window_seconds: int = 1800):
+    output(ctx, call(ctx, "POST", "storylines/correlate", params={"window_seconds": window_seconds}))
+
+
 @groups["rules"].command("validate")
 def validate_rule(path: Path):
     rule = DetectionRule.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))

@@ -24,6 +24,8 @@ def upgrade():
         "agent_enrollment_tokens",
         "audit_heads",
         "audit_checkpoints",
+        "storylines",
+        "storyline_members",
         "replay_jobs",
         "replay_matches",
     }

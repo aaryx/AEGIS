@@ -740,6 +740,10 @@ def test_postgres_schema_migration_previous_to_current(pg_engine):
             assert "replay_jobs" in tables_0007
             assert "replay_matches" in tables_0007
 
+        command.upgrade(cfg, "0008")
+        with mig_engine.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0008"
+            assert conn.execute(text("SELECT count(*) FROM storylines")).scalar() == 0
         mig_engine.dispose()
     finally:
         raw_conn.execute(f"DROP DATABASE IF EXISTS {mig_db_name}")
@@ -839,3 +843,53 @@ def test_postgres_concurrent_rule_activation_and_replay(pg_system):
             else:
                 assert len(matches) >= 0
 
+
+
+
+def test_postgres_concurrent_storyline_correlation(pg_system):
+    from types import SimpleNamespace
+
+    from sqlalchemy import func
+
+    from aegis.db import Alert, Incident, Storyline, StorylineMember
+    from aegis.storylines import correlate
+
+    sessions, org = pg_system["sessions"], pg_system["org"]
+    principal = SimpleNamespace(organization_id=org, user=SimpleNamespace(id=pg_system["user_id"]))
+    with sessions.begin() as db:
+        entity = Entity(organization_id=org, type="host", value="correlation-host")
+        db.add(entity)
+        db.flush()
+        for _ in range(4):
+            identifier = str(uuid4())
+            db.add(Alert(id="ALT-" + identifier, organization_id=org, title="Synthetic detection",
+                         severity="high", rule_id="test", rule_version=1, fingerprint=identifier,
+                         correlation_key=identifier, confidence=80, risk_score=70, risk_factors={},
+                         explanation={}, mitre_techniques=[], entity_ids=[entity.id],
+                         first_seen=datetime.now(UTC), last_seen=datetime.now(UTC)))
+
+    def run(_):
+        with sessions.begin() as db:
+            return correlate(db, pg_system["settings"], principal, 1800)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(run, range(4)))
+    assert sum(r["changed"] for r in results) == 1
+
+    def update_or_correlate(index):
+        if index % 2:
+            return run(index)
+        with sessions.begin() as db:
+            incident = db.scalar(select(Incident).join(Storyline, Storyline.incident_id == Incident.id)
+                                 .where(Storyline.organization_id == org).with_for_update(of=Incident))
+            incident.revision += 1
+            audit(db, pg_system["settings"], org, principal.user.id,
+                  "incidents.update", incident.id, details={"revision": incident.revision})
+        return None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(update_or_correlate, range(8)))
+    with sessions() as db:
+        assert db.scalar(select(func.count()).select_from(Storyline).where(Storyline.organization_id == org)) == 1
+        assert db.scalar(select(func.count()).select_from(StorylineMember).where(StorylineMember.organization_id == org)) == 4
+        assert verify_audit(db, pg_system["settings"], org) is True

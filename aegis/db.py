@@ -188,6 +188,21 @@ class IncidentAlert(Base):
     alert_id: Mapped[str] = mapped_column(ForeignKey("alerts.id"), primary_key=True)
 
 
+class Storyline(Owned, Base):
+    __tablename__ = "storylines"
+    incident_id: Mapped[str] = mapped_column(ForeignKey("incidents.id"), unique=True)
+    anchor_alert_id: Mapped[str] = mapped_column(ForeignKey("alerts.id"), unique=True)
+    window_seconds: Mapped[int]
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class StorylineMember(Owned, Base):
+    __tablename__ = "storyline_members"
+    storyline_id: Mapped[str] = mapped_column(ForeignKey("storylines.id"), index=True)
+    alert_id: Mapped[str] = mapped_column(ForeignKey("alerts.id"), unique=True)
+    reasons: Mapped[list] = mapped_column(JSON, default=list)
+
+
 class Case(Owned, Base):
     __tablename__ = "cases"
     title: Mapped[str] = mapped_column(String(300))
