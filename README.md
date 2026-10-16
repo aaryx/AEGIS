@@ -424,6 +424,12 @@ npm --prefix web run dev
 
 ---
 
+## Attack Storylines
+
+Persisted alert correlation is available through the Storylines console and
+`aegis storylines correlate`. Upgrade to migration `0008` before deployment.
+See [correlation behavior, scoring, limits and workflow](docs/storylines.md).
+
 ## Operational Commands & API Examples
 
 ### CLI Reference

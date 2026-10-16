@@ -11,6 +11,7 @@ import re
 import socket
 import ssl
 import threading
+import time
 from datetime import UTC, datetime
 from typing import Any, Callable
 
@@ -146,11 +147,15 @@ class SyslogServer:
         if self.protocol == "udp":
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._socket.bind((self.host, self.port))
+            if self.port == 0:
+                self.port = self._socket.getsockname()[1]
             self._thread = threading.Thread(target=self._run_udp, daemon=True)
         elif self.protocol == "tcp":
             raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             raw_sock.bind((self.host, self.port))
+            if self.port == 0:
+                self.port = raw_sock.getsockname()[1]
             raw_sock.listen(50)
             if self.ssl_context:
                 self._socket = self.ssl_context.wrap_socket(raw_sock, server_side=True)
@@ -174,6 +179,27 @@ class SyslogServer:
             self._thread.join(timeout=2.0)
         logger.info("Syslog listener stopped")
 
+    def _dispatch_batch_with_retry(self, batch: list[EventInput], max_retries: int = 3) -> None:
+        """Dispatches event batch to handler with retry and backpressure delay on transient errors."""
+        delay = 0.05
+        for attempt in range(max_retries + 1):
+            try:
+                self.handler(batch)
+                return
+            except Exception as exc:
+                if attempt == max_retries or not self.running:
+                    logger.error("Syslog dispatch failed after %d retries: %s", max_retries, exc)
+                    raise
+                logger.warning(
+                    "Syslog handler transient error (attempt %d/%d): %s; backing off for %.2fs",
+                    attempt + 1,
+                    max_retries,
+                    exc,
+                    delay,
+                )
+                time.sleep(delay)
+                delay = min(delay * 2, 1.0)
+
     def _run_udp(self) -> None:
         assert self._socket is not None
         self._socket.settimeout(1.0)
@@ -185,18 +211,18 @@ class SyslogServer:
                 event = parse_syslog_message(text, default_source=addr[0])
                 batch.append(event)
                 if len(batch) >= self.batch_size:
-                    self.handler(batch)
+                    self._dispatch_batch_with_retry(batch)
                     batch = []
             except TimeoutError:
                 if batch:
-                    self.handler(batch)
+                    self._dispatch_batch_with_retry(batch)
                     batch = []
             except Exception as exc:
                 if self.running:
                     logger.warning("UDP receive error: %s", exc)
         if batch:
             try:
-                self.handler(batch)
+                self._dispatch_batch_with_retry(batch)
             except Exception as exc:
                 logger.debug("Final batch flush error: %s", exc)
 
@@ -262,11 +288,11 @@ class SyslogServer:
                     break
 
                 if len(batch) >= self.batch_size:
-                    self.handler(batch)
+                    self._dispatch_batch_with_retry(batch)
                     batch = []
 
             if batch:
-                self.handler(batch)
+                self._dispatch_batch_with_retry(batch)
         except Exception as exc:
             logger.debug("TCP client %s disconnected: %s", client_ip, exc)
         finally:

@@ -63,43 +63,105 @@ def ingest(db, settings, organization_id: str, events: list[EventInput], actor: 
     new_count = len(set(ids) - set(existing))
     if new_count and depth + search_depth + new_count > settings.queue_capacity:
         raise OverflowError("Tenant ingestion/search backlog is full; retry later")
-    collectors = {
-        row.name: row
-        for row in db.scalars(select(Collector).where(Collector.organization_id == organization_id))
-    }
     accepted, duplicates = [], []
+    bind = db.get_bind()
+    is_pg = bind.dialect.name == "postgresql"
     for event in normalized:
         evidence_hash = digest(event.raw_event)
         if event.event_id in existing:
-            if existing[event.event_id].evidence_hash != evidence_hash:
+            prev_hash = existing[event.event_id].evidence_hash if hasattr(existing[event.event_id], "evidence_hash") else existing[event.event_id]
+            if prev_hash != evidence_hash:
                 raise ValueError("Source sequence was reused with different evidence")
             duplicates.append(event.event_id)
-            continue
-        row = EventRecord(
-            id=event.event_id,
-            organization_id=organization_id,
-            timestamp=event.timestamp,
-            source=event.source,
-            evidence_hash=evidence_hash,
-            payload=event.model_dump(mode="json"),
-        )
-        db.add(row)
-        existing[row.id] = row
-        accepted.append(row.id)
-        collector = collectors.get(event.collector)
-        if not collector:
-            collector = Collector(
-                organization_id=organization_id,
-                name=event.collector,
-                type=event.source_type,
-                events_received=0,
-                events_processed=0,
-                errors=0,
+        else:
+            if is_pg:
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                stmt = (
+                    pg_insert(EventRecord)
+                    .values(
+                        id=event.event_id,
+                        organization_id=organization_id,
+                        timestamp=event.timestamp,
+                        source=event.source,
+                        evidence_hash=evidence_hash,
+                        payload=event.model_dump(mode="json"),
+                    )
+                    .on_conflict_do_nothing(index_elements=["id"])
+                    .returning(EventRecord.id)
+                )
+                inserted_id = db.execute(stmt).scalar_one_or_none()
+            else:
+                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+                stmt = (
+                    sqlite_insert(EventRecord)
+                    .values(
+                        id=event.event_id,
+                        organization_id=organization_id,
+                        timestamp=event.timestamp,
+                        source=event.source,
+                        evidence_hash=evidence_hash,
+                        payload=event.model_dump(mode="json"),
+                    )
+                    .on_conflict_do_nothing(index_elements=["id"])
+                    .returning(EventRecord.id)
+                )
+                inserted_id = db.execute(stmt).scalar_one_or_none()
+
+            existing[event.event_id] = evidence_hash
+            if inserted_id:
+                accepted.append(event.event_id)
+            else:
+                duplicates.append(event.event_id)
+
+        # Atomic collector upsert & counter increment
+        if is_pg:
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+            col_stmt: Any = (
+                pg_insert(Collector)
+                .values(
+                    organization_id=organization_id,
+                    name=event.collector,
+                    type=event.source_type,
+                    events_received=1,
+                    events_processed=0,
+                    errors=0,
+                    last_heartbeat=event.ingest_timestamp,
+                )
+                .on_conflict_do_update(
+                    index_elements=["organization_id", "name"],
+                    set_={
+                        "events_received": Collector.events_received + 1,
+                        "last_heartbeat": event.ingest_timestamp,
+                    },
+                )
             )
-            collectors[event.collector] = collector
-            db.add(collector)
-        collector.events_received += 1
-        collector.last_heartbeat = event.ingest_timestamp
+            db.execute(col_stmt)
+        else:
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+            col_stmt = (
+                sqlite_insert(Collector)
+                .values(
+                    organization_id=organization_id,
+                    name=event.collector,
+                    type=event.source_type,
+                    events_received=1,
+                    events_processed=0,
+                    errors=0,
+                    last_heartbeat=event.ingest_timestamp,
+                )
+                .on_conflict_do_update(
+                    index_elements=["organization_id", "name"],
+                    set_={
+                        "events_received": Collector.events_received + 1,
+                        "last_heartbeat": event.ingest_timestamp,
+                    },
+                )
+            )
+            db.execute(col_stmt)
     audit(
         db,
         settings,
@@ -153,15 +215,38 @@ def track_entities(db, org, event, cache, max_entities: int = 15):
     # Bound extracted entities per event to prevent combinatorial explosion
     descriptors = list(dict.fromkeys(descriptors))[:max_entities]
     entities = []
+    bind = db.get_bind()
+    is_pg = bind.dialect.name == "postgresql"
     for kind, value in descriptors:
         key = (kind, value)
         entity = cache.get(key)
         if not entity:
-            entity = Entity(
-                id=uid(), organization_id=org, type=kind, value=value, risk_score=0, attributes={}
+            entity = db.scalar(
+                select(Entity).where(Entity.organization_id == org, Entity.type == kind, Entity.value == value)
             )
-            db.add(entity)
-            cache[key] = entity
+        if not entity:
+            if is_pg:
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                ent_stmt: Any = (
+                    pg_insert(Entity)
+                    .values(id=uid(), organization_id=org, type=kind, value=value, risk_score=0, attributes={})
+                    .on_conflict_do_nothing(index_elements=["organization_id", "type", "value"])
+                )
+                db.execute(ent_stmt)
+            else:
+                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+                ent_stmt = (
+                    sqlite_insert(Entity)
+                    .values(id=uid(), organization_id=org, type=kind, value=value, risk_score=0, attributes={})
+                    .on_conflict_do_nothing(index_elements=["organization_id", "type", "value"])
+                )
+                db.execute(ent_stmt)
+            entity = db.scalar(
+                select(Entity).where(Entity.organization_id == org, Entity.type == kind, Entity.value == value)
+            )
+        cache[key] = entity
         observed = datetime.fromisoformat(event["timestamp"])
         from datetime import UTC
 
@@ -212,15 +297,13 @@ def track_entities(db, org, event, cache, max_entities: int = 15):
             digest([org, left.id, right.id, event["event_id"]]): (left, right, rel)
             for left, right, rel in pairs
         }
-        existing_ids = set(
-            db.scalars(
-                select(EntityRelationship.id).where(EntityRelationship.id.in_(list(candidate_ids.keys())))
-            )
-        )
         for rel_id, (left, right, rel_name) in candidate_ids.items():
-            if rel_id not in existing_ids:
-                db.add(
-                    EntityRelationship(
+            if is_pg:
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                db.execute(
+                    pg_insert(EntityRelationship)
+                    .values(
                         id=rel_id,
                         organization_id=org,
                         source_id=left.id,
@@ -228,6 +311,22 @@ def track_entities(db, org, event, cache, max_entities: int = 15):
                         event_id=event["event_id"],
                         relation=rel_name,
                     )
+                    .on_conflict_do_nothing(index_elements=["id"])
+                )
+            else:
+                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+                db.execute(
+                    sqlite_insert(EntityRelationship)
+                    .values(
+                        id=rel_id,
+                        organization_id=org,
+                        source_id=left.id,
+                        target_id=right.id,
+                        event_id=event["event_id"],
+                        relation=rel_name,
+                    )
+                    .on_conflict_do_nothing(index_elements=["id"])
                 )
     return entities
 
@@ -236,6 +335,7 @@ def detect_batch(db, settings, records, redis=None):
     if not records:
         return
     org = records[0].organization_id
+    bind = db.get_bind()
     rules = [
         (row, DetectionRule.model_validate(row.document))
         for row in db.scalars(select(Rule).where(Rule.organization_id == org, Rule.enabled.is_(True)))
@@ -351,9 +451,28 @@ def detect_batch(db, settings, records, redis=None):
                 if score > alert.risk_score:
                     alert.risk_score, alert.risk_factors = score, factors
             for event_id in explanation["event_ids"]:
-                if not db.get(AlertEvent, (alert.id, event_id)):
-                    db.add(AlertEvent(alert_id=alert.id, event_id=event_id))
-                    alert.event_count += 1
+                if bind.dialect.name == "postgresql":
+                    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                    ae_res = db.execute(
+                        pg_insert(AlertEvent)
+                        .values(alert_id=alert.id, event_id=event_id)
+                        .on_conflict_do_nothing()
+                        .returning(AlertEvent.alert_id)
+                    ).scalar_one_or_none()
+                    if ae_res:
+                        alert.event_count += 1
+                else:
+                    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+                    ae_res = db.execute(
+                        sqlite_insert(AlertEvent)
+                        .values(alert_id=alert.id, event_id=event_id)
+                        .on_conflict_do_nothing()
+                        .returning(AlertEvent.alert_id)
+                    ).scalar_one_or_none()
+                    if ae_res:
+                        alert.event_count += 1
             for entity in entities:
                 entity.risk_score = max(entity.risk_score, score)
             if rule.id == "AEGIS-CORR-001":
@@ -374,11 +493,39 @@ def detect_batch(db, settings, records, redis=None):
                     select(Alert).where(Alert.organization_id == org, Alert.correlation_key == correlation)
                 )
                 for related_alert in related:
-                    if not db.get(IncidentAlert, (incident.id, related_alert.id)):
-                        db.add(IncidentAlert(incident_id=incident.id, alert_id=related_alert.id))
+                    if bind.dialect.name == "postgresql":
+                        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+                        db.execute(
+                            pg_insert(IncidentAlert)
+                            .values(incident_id=incident.id, alert_id=related_alert.id)
+                            .on_conflict_do_nothing()
+                        )
+                    else:
+                        from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+                        db.execute(
+                            sqlite_insert(IncidentAlert)
+                            .values(incident_id=incident.id, alert_id=related_alert.id)
+                            .on_conflict_do_nothing()
+                        )
         record.state, record.last_error = "PROCESSED", None
-        if not db.get(SearchJob, record.id):
-            db.add(SearchJob(event_id=record.id, organization_id=org))
+        if bind.dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+            db.execute(
+                pg_insert(SearchJob)
+                .values(event_id=record.id, organization_id=org)
+                .on_conflict_do_nothing(index_elements=["event_id"])
+            )
+        else:
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+            db.execute(
+                sqlite_insert(SearchJob)
+                .values(event_id=record.id, organization_id=org)
+                .on_conflict_do_nothing(index_elements=["event_id"])
+            )
         collector = collectors.get(event["collector"])
         if collector:
             collector.events_processed += 1

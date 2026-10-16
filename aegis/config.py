@@ -18,6 +18,17 @@ class Settings(BaseSettings):
     audit_secret: SecretStr = SecretStr("")
     audit_key_version: int = Field(1, ge=1)
     controller_signing_key: SecretStr = SecretStr("")
+    audit_anchor_backend: Literal["none", "s3", "local_worm"] = "none"
+    audit_anchor_s3_bucket: str = ""
+    audit_anchor_s3_prefix: str = "audit-checkpoints"
+    audit_anchor_s3_region: str = "us-east-1"
+    audit_anchor_s3_endpoint_url: str | None = None
+    audit_anchor_s3_access_key_id: SecretStr = SecretStr("")
+    audit_anchor_s3_secret_access_key: SecretStr = SecretStr("")
+    audit_anchor_s3_object_lock_mode: Literal["COMPLIANCE", "GOVERNANCE"] = "COMPLIANCE"
+    audit_anchor_s3_retention_days: int = Field(365, ge=1)
+    audit_anchor_s3_kms_key_id: str | None = None
+    audit_anchor_local_dir: str = "./local-data/worm-audit"
     cookie_secure: bool = False
     public_origin: str = "http://localhost:3000"
     session_hours: int = Field(8, ge=1, le=24)

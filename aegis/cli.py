@@ -288,6 +288,27 @@ groups = {
 }
 
 
+storylines_app = typer.Typer(help="Correlate and investigate persisted alert storylines.")
+app.add_typer(storylines_app, name="storylines")
+
+
+@storylines_app.command("list")
+def storyline_list(ctx: typer.Context, limit: int = 50, offset: int = 0,
+                   status: str = "", severity: str = ""):
+    output(ctx, call(ctx, "GET", "storylines", params={"limit": limit, "offset": offset,
+                                                       "status": status, "severity": severity}))
+
+
+@storylines_app.command("show")
+def storyline_show(ctx: typer.Context, identifier: str):
+    output(ctx, call(ctx, "GET", f"storylines/{identifier}"))
+
+
+@storylines_app.command("correlate")
+def storyline_correlate(ctx: typer.Context, window_seconds: int = 1800):
+    output(ctx, call(ctx, "POST", "storylines/correlate", params={"window_seconds": window_seconds}))
+
+
 @groups["rules"].command("validate")
 def validate_rule(path: Path):
     rule = DetectionRule.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
@@ -347,6 +368,137 @@ def save_rule(ctx: typer.Context, path: Path, summary: str, version: int = 0, en
             },
         ),
     )
+
+
+@groups["rules"].command("activate")
+def activate_rule_cli(
+    ctx: typer.Context,
+    rule_id: str,
+    version: int = typer.Option(..., "--version", "-v", help="Exact candidate version to activate"),
+    summary: str = typer.Option("Authorized rule activation", "--summary", "-s"),
+):
+    output(
+        ctx,
+        call(
+            ctx,
+            "POST",
+            f"rules/{rule_id}/activate",
+            json={"version": version, "summary": summary},
+        ),
+    )
+
+
+@groups["rules"].command("rollback")
+def rollback_rule_cli(
+    ctx: typer.Context,
+    rule_id: str,
+    target_version: int = typer.Option(..., "--version", "-v", help="Historical version to restore"),
+    summary: str = typer.Option("Authorized version rollback", "--summary", "-s"),
+):
+    output(
+        ctx,
+        call(
+            ctx,
+            "POST",
+            f"rules/{rule_id}/rollback",
+            json={"target_version": target_version, "summary": summary},
+        ),
+    )
+
+
+@groups["rules"].command("replay")
+def replay_rule_cli(
+    ctx: typer.Context,
+    rule_id: str,
+    dataset: str = typer.Option("all", "--dataset", "-d", help="Labelled dataset name or rule ID"),
+    candidate: Path | None = typer.Option(None, "--candidate", "-c", help="Path to candidate rule YAML"),
+    events: Path | None = typer.Option(None, "--events", "-e", help="Path to raw events JSON file"),
+    max_events: int = typer.Option(5000, "--max-events", min=1, max=50000),
+    dry_run: bool = typer.Option(True, "--dry-run/--live"),
+):
+    cand_doc = None
+    if candidate:
+        cand_doc = DetectionRule.model_validate(
+            yaml.safe_load(candidate.read_text(encoding="utf-8"))
+        ).model_dump(mode="json")
+    event_ids = []
+    target_type = "DATASET"
+    if events:
+        target_type = "EVENTS"
+        records = load_events(events, "json")
+        event_ids = [
+            str(r.raw_event.get("event_id", f"evt-{i}"))
+            if isinstance(r.raw_event, dict)
+            else f"evt-{i}"
+            for i, r in enumerate(records)
+        ]
+
+    payload = {
+        "rule_id": rule_id,
+        "candidate_document": cand_doc,
+        "target_type": target_type,
+        "dataset_name": dataset,
+        "event_ids": event_ids,
+        "max_events": max_events,
+        "dry_run": dry_run,
+    }
+    output(ctx, call(ctx, "POST", f"rules/{rule_id}/replay", json=payload))
+
+
+@groups["rules"].command("replays")
+def list_replays_cli(ctx: typer.Context, rule_id: str):
+    output(ctx, call(ctx, "GET", f"rules/{rule_id}/replays"))
+
+
+@groups["rules"].command("diff")
+def diff_rule_versions_cli(
+    ctx: typer.Context,
+    rule_id: str,
+    v1: int = typer.Option(..., "--v1", help="Base version"),
+    v2: int = typer.Option(..., "--v2", help="Target version"),
+):
+    import difflib
+
+    versions_data = call(ctx, "GET", f"rules/{rule_id}/versions", params={"limit": 200})
+    items = versions_data.get("items", []) if isinstance(versions_data, dict) else []
+    doc1 = next((item.get("document") for item in items if item.get("version") == v1), None)
+    doc2 = next((item.get("document") for item in items if item.get("version") == v2), None)
+    if not doc1:
+        console.print(f"Version {v1} not found for rule {rule_id}")
+        raise typer.Exit(1)
+    if not doc2:
+        console.print(f"Version {v2} not found for rule {rule_id}")
+        raise typer.Exit(1)
+
+    text1 = json.dumps(doc1, indent=2, sort_keys=True).splitlines()
+    text2 = json.dumps(doc2, indent=2, sort_keys=True).splitlines()
+    diff = list(difflib.unified_diff(text1, text2, fromfile=f"v{v1}", tofile=f"v{v2}", lineterm=""))
+    if not diff:
+        console.print("No differences found between version documents.")
+    else:
+        for line in diff:
+            if line.startswith("+"):
+                console.print(f"[green]{line}[/green]")
+            elif line.startswith("-"):
+                console.print(f"[red]{line}[/red]")
+            elif line.startswith("@"):
+                console.print(f"[cyan]{line}[/cyan]")
+            else:
+                console.print(line)
+
+
+@groups["rules"].command("import-sigma")
+def import_sigma_cli(ctx: typer.Context, path: Path):
+    if not path.exists():
+        console.print(f"File not found: {path}")
+        raise typer.Exit(1)
+    raw_content = path.read_text(encoding="utf-8")
+    output(ctx, call(ctx, "POST", "rules/import-sigma", json={"yaml_rule": raw_content}))
+
+
+@groups["rules"].command("coverage")
+def coverage_cli(ctx: typer.Context):
+    output(ctx, call(ctx, "GET", "coverage/mitre"))
 
 
 @groups["iocs"].command("add")

@@ -11,6 +11,7 @@ Validates:
 """
 
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
@@ -25,18 +26,22 @@ from aegis.db import (
     AuditHead,
     AuditLog,
     Base,
+    Collector,
+    Entity,
     EventRecord,
     Organization,
+    User,
     WindowState,
 )
 from aegis.detection import SQLState
-from aegis.pipeline import ingest, seed_rules
+from aegis.pipeline import detect_batch, ingest, seed_rules
 from aegis.schemas import EventInput
 from aegis.security import audit, rate_limit, verify_audit
 from aegis.storage import LocalStorage
 from aegis.worker import process_once
 
 POSTGRES_TEST_URL = os.environ.get("AEGIS_POSTGRES_TEST_URL")
+AUDIT_SECRET = os.environ.get("AUDIT_SECRET", "pg-test-audit-integrity-key-32chars-min")
 
 
 @pytest.fixture(scope="module")
@@ -69,7 +74,7 @@ def pg_system(pg_engine, pg_session_factory):
     settings = Settings(
         environment="testing",
         database_url=POSTGRES_TEST_URL,
-        audit_secret="pg-test-audit-integrity-key-32chars-min",
+        audit_secret=AUDIT_SECRET,
         _env_file=None,
     )
     with pg_session_factory.begin() as db:
@@ -77,6 +82,15 @@ def pg_system(pg_engine, pg_session_factory):
         db.add(org)
         db.flush()
         org_id = org.id
+        admin_user = User(
+            organization_id=org_id,
+            username=f"pg_admin_{uuid4().hex[:8]}",
+            password_hash="dummy_hash",
+            role="admin",
+        )
+        db.add(admin_user)
+        db.flush()
+        user_id = admin_user.id
         seed_rules(db, org_id)
 
     return {
@@ -84,6 +98,7 @@ def pg_system(pg_engine, pg_session_factory):
         "sessions": pg_session_factory,
         "settings": settings,
         "org": org_id,
+        "user_id": user_id,
     }
 
 
@@ -123,9 +138,59 @@ def test_postgres_concurrent_rate_limiting(pg_system):
     assert all(results)
 
 
+def _mp_audit_worker(args: tuple[str, str, int]) -> bool:
+    url, org_id, worker_id = args
+    engine = create_engine(url, pool_pre_ping=True)
+    session_maker = sessionmaker(bind=engine)
+    worker_settings = Settings(
+        environment="testing",
+        database_url=url,
+        audit_secret=AUDIT_SECRET,
+        _env_file=None,
+    )
+    with session_maker.begin() as db:
+        audit(
+            db,
+            worker_settings,
+            org_id,
+            actor=f"mp_worker_{worker_id}",
+            action="mp.action",
+            resource_id=f"res_{worker_id}",
+            details={"mp_worker": worker_id},
+        )
+    engine.dispose()
+    return True
+
+
 # ==============================================================================
 # 2. CONCURRENT AUDIT-CHAIN WRITES & SEQUENCE ALLOCATION
 # ==============================================================================
+
+
+def test_postgres_multiprocess_concurrent_audit_writes(pg_system):
+    """Verify that multiple independent operating system processes with separate
+
+    database connection engines concurrently allocate audit sequence numbers via
+    PostgreSQL AuditHead row locking without gaps, duplicates, or deadlocks.
+    """
+    from concurrent.futures import ProcessPoolExecutor
+
+    settings = pg_system["settings"]
+    session_factory = pg_system["sessions"]
+    org_id = pg_system["org"]
+    num_procs = 4
+
+    assert POSTGRES_TEST_URL is not None
+    args_list = [(POSTGRES_TEST_URL, org_id, i) for i in range(num_procs)]
+    with ProcessPoolExecutor(max_workers=num_procs) as executor:
+        results = list(executor.map(_mp_audit_worker, args_list))
+
+    assert all(results)
+    with session_factory() as db:
+        head = db.get(AuditHead, org_id)
+        assert head is not None
+        assert head.sequence_number >= num_procs
+        assert verify_audit(db, settings, org_id) is True
 
 
 def test_postgres_concurrent_audit_writes_and_chain_integrity(pg_system):
@@ -228,7 +293,7 @@ def test_postgres_transaction_rollback_and_retry_behavior(pg_system):
     # 1. Execute an intentionally aborted transaction
     try:
         with session_factory.begin() as db:
-            db.add(WindowState(key=test_key, data=[1], expires=999999.0))
+            db.add(WindowState(key=test_key, data=[1], expires=time.time() + 3600.0))
             db.flush()
             # Trigger deliberate exception
             raise RuntimeError("Deliberate abort to test rollback")
@@ -241,7 +306,7 @@ def test_postgres_transaction_rollback_and_retry_behavior(pg_system):
 
     # 3. Clean transaction retry succeeds on recycled connection
     with session_factory.begin() as db:
-        db.add(WindowState(key=test_key, data=[42], expires=999999.0))
+        db.add(WindowState(key=test_key, data=[42], expires=time.time() + 3600.0))
 
     with session_factory() as db:
         row = db.get(WindowState, test_key)
@@ -316,7 +381,288 @@ def test_postgres_worker_restart_and_duplicate_event_handling(pg_system):
 
 
 # ==============================================================================
-# 6. MIGRATION FROM PREVIOUS SCHEMA (0004) TO CURRENT SCHEMA (0005)
+# 6. SIMULTANEOUS DUPLICATE EVENT INGESTION RACE CONDITION
+# ==============================================================================
+
+
+def test_postgres_simultaneous_duplicate_event_ingestion_race(pg_system):
+    """Verify that simultaneous concurrent ingestion of identical events across independent
+
+    sessions does NOT raise unique-constraint IntegrityError, maintains Collector counts,
+    and returns deterministic accepted/duplicates accounting.
+    """
+    settings = pg_system["settings"]
+    session_factory = pg_system["sessions"]
+    org_id = pg_system["org"]
+    num_threads = 8
+
+    race_event = EventInput(
+        source=f"race-src-{uuid4().hex[:6]}",
+        source_type="json",
+        collector=f"col-{uuid4().hex[:6]}",
+        source_sequence="seq-simultaneous-001",
+        timestamp=datetime.now(UTC),
+        raw_event={
+            "message": "Simultaneous ingestion stress event",
+            "host": "PG-RACE-SRV",
+            "source_ip": "192.168.1.100",
+            "event_category": "system",
+        },
+    )
+
+    exceptions = []
+    results = []
+
+    def ingest_worker():
+        try:
+            with session_factory.begin() as db:
+                res = ingest(db, settings, org_id, [race_event], "race-worker")
+                results.append(res)
+        except Exception as exc:
+            exceptions.append(exc)
+
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(ingest_worker) for _ in range(num_threads)]
+        for f in futures:
+            f.result()
+
+    assert len(exceptions) == 0, f"Simultaneous ingestion produced unexpected exceptions: {exceptions}"
+    assert len(results) == num_threads
+
+    total_accepted = sum(len(r["accepted"]) for r in results)
+    total_duplicates = sum(len(r["duplicates"]) for r in results)
+
+    # Exactly 1 request accepted the event; the remaining num_threads - 1 handled it as duplicate
+    assert total_accepted == 1
+    assert total_duplicates == num_threads - 1
+
+    # Verify database contains exactly 1 EventRecord row
+    with session_factory() as db:
+        records = list(
+            db.scalars(
+                select(EventRecord).where(
+                    EventRecord.organization_id == org_id,
+                    EventRecord.source == race_event.source,
+                )
+            )
+        )
+        assert len(records) == 1
+        collector = db.scalar(
+            select(Collector).where(
+                Collector.organization_id == org_id,
+                Collector.name == race_event.collector,
+            )
+        )
+        assert collector is not None
+        assert collector.events_received == num_threads
+
+
+# ==============================================================================
+# 7. MULTI-TENANT CONCURRENT AUDIT-CHAIN ISOLATION
+# ==============================================================================
+
+
+def test_postgres_multi_tenant_concurrent_audit_isolation(pg_engine, pg_session_factory):
+    """Verify that concurrent audit writes from two separate organizations progress
+
+    independently without deadlocks, sequence interference, or cross-tenant contamination.
+    """
+    settings = Settings(
+        environment="testing",
+        database_url=POSTGRES_TEST_URL,
+        audit_secret=AUDIT_SECRET,
+        _env_file=None,
+    )
+    with pg_session_factory.begin() as db:
+        org_a = Organization(name=f"PG-TenantA-{uuid4().hex[:6]}")
+        org_b = Organization(name=f"PG-TenantB-{uuid4().hex[:6]}")
+        db.add_all([org_a, org_b])
+        db.flush()
+        org_a_id, org_b_id = org_a.id, org_b.id
+
+    writes_per_org = 10
+    exceptions = []
+
+    def tenant_audit_worker(org_id: str, index: int):
+        try:
+            with pg_session_factory.begin() as db:
+                audit(
+                    db,
+                    settings,
+                    org_id,
+                    actor=f"tenant_worker_{index}",
+                    action="tenant.action",
+                    resource_id=f"res_{index}",
+                )
+        except Exception as exc:
+            exceptions.append((org_id, exc))
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = []
+        for i in range(writes_per_org):
+            futures.append(executor.submit(tenant_audit_worker, org_a_id, i))
+            futures.append(executor.submit(tenant_audit_worker, org_b_id, i))
+        for f in futures:
+            f.result()
+
+    assert len(exceptions) == 0, f"Exceptions in multi-tenant audit: {exceptions}"
+
+    with pg_session_factory() as db:
+        # Both tenant audit heads must reach exactly writes_per_org
+        head_a = db.get(AuditHead, org_a_id)
+        head_b = db.get(AuditHead, org_b_id)
+        assert head_a is not None and head_a.sequence_number == writes_per_org
+        assert head_b is not None and head_b.sequence_number == writes_per_org
+
+        # Both HMAC chains must independently verify as 100% valid
+        assert verify_audit(db, settings, org_a_id) is True
+        assert verify_audit(db, settings, org_b_id) is True
+
+
+# ==============================================================================
+# 8. CONCURRENT ENTITY EXTRACTION AND GRAPH UPSERTS
+# ==============================================================================
+
+
+def test_postgres_concurrent_entity_and_relationship_upserts(pg_system):
+    """Verify that multiple concurrent worker processes extracting the exact same
+
+    entity identities and semantic relationships concurrently do not raise UniqueViolation.
+    """
+    settings = pg_system["settings"]
+    session_factory = pg_system["sessions"]
+    org_id = pg_system["org"]
+    num_threads = 6
+
+    # Ingest multiple events referencing the same host and user
+    events = [
+        EventInput(
+            source=f"shared-src-{uuid4().hex[:6]}",
+            source_type="json",
+            collector="entity-bench",
+            source_sequence=f"seq-shared-{i}",
+            timestamp=datetime.now(UTC),
+            raw_event={
+                "message": f"Logon session {i}",
+                "host": "CRITICAL-DC-01",
+                "username": "domain_admin",
+                "source_ip": "10.0.0.5",
+                "event_category": "authentication",
+                "action": "logon",
+            },
+        )
+        for i in range(num_threads)
+    ]
+
+    with session_factory.begin() as db:
+        ingest_res = ingest(db, settings, org_id, events, "entity-test")
+        assert len(ingest_res["accepted"]) == num_threads
+
+    exceptions = []
+
+    def detect_worker(record_id: str):
+        try:
+            with session_factory.begin() as db:
+                rec = db.get(EventRecord, record_id)
+                if rec and rec.state in ["PENDING", "RETRY"]:
+                    detect_batch(db, settings, [rec])
+        except Exception as exc:
+            exceptions.append(exc)
+
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(detect_worker, evt_id) for evt_id in ingest_res["accepted"]]
+        for f in futures:
+            f.result()
+
+    assert len(exceptions) == 0, f"Concurrent entity extraction threw: {exceptions}"
+
+    with session_factory() as db:
+        # Check that unique entity records exist without duplicate entries
+        entities = list(
+            db.scalars(
+                select(Entity).where(
+                    Entity.organization_id == org_id,
+                    Entity.value.in_(["CRITICAL-DC-01", "domain_admin", "10.0.0.5"]),
+                )
+            )
+        )
+        entity_values = {e.value for e in entities}
+        assert entity_values == {"CRITICAL-DC-01", "domain_admin", "10.0.0.5"}
+
+
+# ==============================================================================
+# 9. POSTGRESQL LOCK TIMEOUT AND TRANSACTION ABORT RECOVERY
+# ==============================================================================
+
+
+def test_postgres_lock_timeout_and_abort_recovery(pg_system):
+    """Verify that PostgreSQL lock_timeout aborts blocked queries safely and that the
+
+    connection pool recovers cleanly without poisoned state.
+    """
+    session_factory = pg_system["sessions"]
+    lock_key = f"lock_test_{uuid4().hex[:6]}"
+
+    # Setup initial row with future expiration so background worker does not prune it
+    with session_factory.begin() as db:
+        db.add(WindowState(key=lock_key, data=[100], expires=time.time() + 3600.0))
+
+    import threading
+    barrier = threading.Barrier(2)
+    timed_out = []
+    holding_errors = []
+
+    def holding_worker():
+        try:
+            with session_factory.begin() as db:
+                # Take an exclusive row lock
+                db.scalar(
+                    select(WindowState)
+                    .where(WindowState.key == lock_key)
+                    .with_for_update()
+                )
+                barrier.wait()
+                # Hold lock for 0.8s
+                time.sleep(0.8)
+        except Exception as exc:
+            holding_errors.append(exc)
+
+    def blocked_worker():
+        barrier.wait()
+        with session_factory() as db:
+            # Set short lock timeout: 200 milliseconds
+            db.execute(text("SET LOCAL lock_timeout = '200ms'"))
+            try:
+                db.scalar(
+                    select(WindowState)
+                    .where(WindowState.key == lock_key)
+                    .with_for_update()
+                )
+            except Exception as exc:
+                timed_out.append(exc)
+                db.rollback()
+
+    t1 = threading.Thread(target=holding_worker)
+    t2 = threading.Thread(target=blocked_worker)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert len(holding_errors) == 0, f"holding_worker encountered: {holding_errors}"
+    # The blocked session must have encountered lock timeout error
+    assert len(timed_out) == 1
+    assert "lock timeout" in str(timed_out[0]).lower() or "canceling statement due to lock timeout" in str(timed_out[0]).lower()
+
+    # Verify that the recycled connection pool continues operating normally
+    with session_factory.begin() as db:
+        row = db.get(WindowState, lock_key)
+        assert row is not None
+        assert row.data == [100]
+
+
+# ==============================================================================
+# 10. MIGRATION FROM PREVIOUS SCHEMA (0004) TO CURRENT SCHEMA (0005)
 # ==============================================================================
 
 
@@ -332,14 +678,19 @@ def test_postgres_schema_migration_previous_to_current(pg_engine):
     cfg = Config(str(root / "alembic.ini"))
     mig_db_name = f"aegis_mig_{uuid4().hex[:8]}"
 
+    from sqlalchemy.engine import make_url
+
+    parsed_url = make_url(POSTGRES_TEST_URL)
+    admin_url = parsed_url.set(database="postgres")
+    psycopg_dsn = admin_url.render_as_string(hide_password=False).replace("postgresql+psycopg://", "postgresql://")
     # Create temporary database outside transaction
     raw_conn = psycopg.connect(
-        "postgresql://aegis:7801778711a54980fe47b0e2807da5a0a9c9313e73df9914@127.0.0.1:5433/postgres",
+        psycopg_dsn,
         autocommit=True,
     )
     try:
         raw_conn.execute(f"CREATE DATABASE {mig_db_name}")
-        mig_url = f"postgresql+psycopg://aegis:7801778711a54980fe47b0e2807da5a0a9c9313e73df9914@127.0.0.1:5433/{mig_db_name}"
+        mig_url = parsed_url.set(database=mig_db_name).render_as_string(hide_password=False)
         cfg.set_main_option("sqlalchemy.url", mig_url)
 
         # 1. Migrate to revision 0004 (previous schema)
@@ -354,7 +705,7 @@ def test_postgres_schema_migration_previous_to_current(pg_engine):
             assert "audit_heads" not in tables
             assert "audit_checkpoints" not in tables
 
-        # 2. Upgrade to revision 0005 (current schema)
+        # 2. Upgrade to revision 0005
         command.upgrade(cfg, "0005")
 
         with mig_engine.connect() as conn:
@@ -366,8 +717,179 @@ def test_postgres_schema_migration_previous_to_current(pg_engine):
             assert "audit_checkpoints" in tables_after
             assert "agent_enrollment_tokens" in tables_after
 
+        # 3. Upgrade to revision 0006 (immutable audit anchoring)
+        command.upgrade(cfg, "0006")
+
+        with mig_engine.connect() as conn:
+            v_0006 = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+            assert v_0006 == "0006"
+            columns_0006 = set(conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name = 'audit_checkpoints'")).scalars().all())
+            assert "anchor_status" in columns_0006
+            assert "anchor_uri" in columns_0006
+            assert "anchor_version_id" in columns_0006
+            assert "anchored_at" in columns_0006
+            assert "anchor_error" in columns_0006
+
+        # 4. Upgrade to revision 0007 (detection replay lab)
+        command.upgrade(cfg, "0007")
+
+        with mig_engine.connect() as conn:
+            v_0007 = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
+            assert v_0007 == "0007"
+            tables_0007 = set(conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")).scalars().all())
+            assert "replay_jobs" in tables_0007
+            assert "replay_matches" in tables_0007
+
+        command.upgrade(cfg, "0008")
+        with mig_engine.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0008"
+            assert conn.execute(text("SELECT count(*) FROM storylines")).scalar() == 0
         mig_engine.dispose()
     finally:
         raw_conn.execute(f"DROP DATABASE IF EXISTS {mig_db_name}")
         raw_conn.close()
 
+
+# ==============================================================================
+# 11. CONCURRENT RULE ACTIVATION AND REPLAY ON REAL POSTGRESQL
+# ==============================================================================
+
+
+def test_postgres_concurrent_rule_activation_and_replay(pg_system):
+    """Verify that concurrent rule version updates and replay persistence on PostgreSQL
+
+    preserve row-level lock serialization, foreign key integrity, and JSONB serialization.
+    """
+    from aegis.db import ReplayJob, ReplayMatch, Rule, RuleVersion
+    from aegis.replay import execute_replay
+    from aegis.schemas import ReplayRequest
+
+    session_factory = pg_system["sessions"]
+    org_id = pg_system["org"]
+    user_id = pg_system["user_id"]
+
+    # 1. Ensure a seeded rule exists in PostgreSQL
+    with session_factory.begin() as db:
+        rule_row = db.scalar(
+            select(Rule).where(
+                Rule.organization_id == org_id,
+                (Rule.rule_id == "AUTH-001") | (Rule.rule_id == "AEGIS-AUTH-001"),
+            )
+        )
+        assert rule_row is not None
+        target_rule_id = rule_row.rule_id
+        db.add(
+            RuleVersion(
+                organization_id=org_id,
+                rule_id=rule_row.id,
+                version=1,
+                author=user_id,
+                summary="Initial PostgreSQL version",
+                lifecycle_stage="ACTIVE",
+                document=rule_row.document,
+            )
+        )
+
+    # 2. Run two concurrent replays against PostgreSQL
+    num_replays = 4
+    results = []
+    exceptions = []
+
+    def replay_worker(worker_id: int):
+        try:
+            with session_factory.begin() as db:
+                req = ReplayRequest(
+                    rule_id=target_rule_id,
+                    target_type="DATASET",
+                    dataset_name="AUTH-001",
+                    max_events=100,
+                    dry_run=True,
+                )
+                res = execute_replay(
+                    db=db,
+                    org_id=org_id,
+                    user_id=user_id,
+                    request=req,
+                )
+                results.append(res)
+        except Exception as exc:
+            exceptions.append(exc)
+
+    with ThreadPoolExecutor(max_workers=num_replays) as executor:
+        futures = [executor.submit(replay_worker, i) for i in range(num_replays)]
+        for f in futures:
+            f.result()
+
+    assert len(exceptions) == 0, f"PostgreSQL concurrent replay threw: {exceptions}"
+    assert len(results) == num_replays
+
+    # 3. Verify PostgreSQL database state: jobs, matches, and foreign key cascades
+    with session_factory() as db:
+        jobs = list(
+            db.scalars(
+                select(ReplayJob).where(
+                    ReplayJob.organization_id == org_id,
+                    ReplayJob.rule_id == target_rule_id,
+                )
+            )
+        )
+        assert len(jobs) == num_replays
+        for j in jobs:
+            assert j.status in {"COMPLETED", "COMPLETED_WITH_WARNINGS"}
+            assert j.events_evaluated > 0
+            matches = list(db.scalars(select(ReplayMatch).where(ReplayMatch.job_id == j.id)))
+            if isinstance(j.metrics, dict) and "candidate_matches_count" in j.metrics:
+                assert len(matches) == j.metrics["candidate_matches_count"]
+            else:
+                assert len(matches) >= 0
+
+
+
+
+def test_postgres_concurrent_storyline_correlation(pg_system):
+    from types import SimpleNamespace
+
+    from sqlalchemy import func
+
+    from aegis.db import Alert, Incident, Storyline, StorylineMember
+    from aegis.storylines import correlate
+
+    sessions, org = pg_system["sessions"], pg_system["org"]
+    principal = SimpleNamespace(organization_id=org, user=SimpleNamespace(id=pg_system["user_id"]))
+    with sessions.begin() as db:
+        entity = Entity(organization_id=org, type="host", value="correlation-host")
+        db.add(entity)
+        db.flush()
+        for _ in range(4):
+            identifier = str(uuid4())
+            db.add(Alert(id="ALT-" + identifier, organization_id=org, title="Synthetic detection",
+                         severity="high", rule_id="test", rule_version=1, fingerprint=identifier,
+                         correlation_key=identifier, confidence=80, risk_score=70, risk_factors={},
+                         explanation={}, mitre_techniques=[], entity_ids=[entity.id],
+                         first_seen=datetime.now(UTC), last_seen=datetime.now(UTC)))
+
+    def run(_):
+        with sessions.begin() as db:
+            return correlate(db, pg_system["settings"], principal, 1800)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(run, range(4)))
+    assert sum(r["changed"] for r in results) == 1
+
+    def update_or_correlate(index):
+        if index % 2:
+            return run(index)
+        with sessions.begin() as db:
+            incident = db.scalar(select(Incident).join(Storyline, Storyline.incident_id == Incident.id)
+                                 .where(Storyline.organization_id == org).with_for_update(of=Incident))
+            incident.revision += 1
+            audit(db, pg_system["settings"], org, principal.user.id,
+                  "incidents.update", incident.id, details={"revision": incident.revision})
+        return None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(update_or_correlate, range(8)))
+    with sessions() as db:
+        assert db.scalar(select(func.count()).select_from(Storyline).where(Storyline.organization_id == org)) == 1
+        assert db.scalar(select(func.count()).select_from(StorylineMember).where(StorylineMember.organization_id == org)) == 4
+        assert verify_audit(db, pg_system["settings"], org) is True

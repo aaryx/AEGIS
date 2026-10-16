@@ -46,12 +46,12 @@ def test_syslog_tcp_server_octet_and_newline_framing():
     def handler(batch):
         received.extend(batch)
 
-    server = SyslogServer(handler=handler, host="127.0.0.1", port=15514, protocol="tcp", batch_size=1)
+    server = SyslogServer(handler=handler, host="127.0.0.1", port=0, protocol="tcp", batch_size=1)
     server.start()
     try:
         # Connect TCP client
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client:
-            client.connect(("127.0.0.1", 15514))
+            client.connect(("127.0.0.1", server.port))
 
             # 1. Send newline-framed RFC 3164 message
             msg1 = "<34>Oct 11 22:14:15 host-nl app: newline message\n"
