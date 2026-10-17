@@ -1,6 +1,6 @@
 export type Location = { page: string; selected: { resource: string; id: string } | null };
 const pages: Record<string, string> = {
-  dashboard: "Dashboard", alerts: "Alerts", incidents: "Incidents", storylines: "Storylines", cases: "Cases",
+  ueba: "UEBA", dashboard: "Dashboard", alerts: "Alerts", incidents: "Incidents", storylines: "Storylines", cases: "Cases",
   hunting: "Threat Hunting", events: "Events", entities: "Entities", rules: "Detection Rules",
   iocs: "Threat Intelligence", observables: "Threat Intelligence", mitre: "MITRE ATT&CK", reports: "Reports", playbooks: "Playbooks",
   collectors: "Collectors", health: "System Health", audit: "Audit", settings: "Settings"

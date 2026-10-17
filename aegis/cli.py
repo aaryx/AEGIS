@@ -1023,5 +1023,44 @@ def intel_history(ctx: typer.Context, identifier: str, offset: int = 0):
     output(ctx, call(ctx, "GET", f"iocs/enrichments/{identifier}/history", params={"offset": offset}))
 
 
+ueba_app = typer.Typer(help="Bounded behavioral analysis and evidence")
+app.add_typer(ueba_app, name="ueba")
+
+
+@ueba_app.command("profiles")
+def ueba_profiles(ctx: typer.Context, entity: str = "", offset: int = 0):
+    output(ctx, call(ctx, "GET", "ueba/profiles", params={"entity": entity, "offset": offset}))
+
+
+@ueba_app.command("profile")
+def ueba_profile(ctx: typer.Context, identifier: str):
+    output(ctx, call(ctx, "GET", f"ueba/profiles/{identifier}"))
+
+
+@ueba_app.command("findings")
+def ueba_findings(ctx: typer.Context, entity: str = "", detector: str = "", offset: int = 0):
+    output(ctx, call(ctx, "GET", "ueba/findings", params={"entity": entity, "detector": detector, "offset": offset}))
+
+
+@ueba_app.command("evidence")
+def ueba_evidence(ctx: typer.Context, identifier: str, offset: int = 0):
+    output(ctx, call(ctx, "GET", f"ueba/findings/{identifier}", params={"offset": offset}))
+
+
+@ueba_app.command("analyze")
+def ueba_analyze(ctx: typer.Context, window_end: str, refresh_only: bool = False):
+    output(ctx, call(ctx, "POST", "ueba/analyze", json={"window_end": window_end, "refresh_only": refresh_only}))
+
+
+@ueba_app.command("jobs")
+def ueba_jobs(ctx: typer.Context):
+    output(ctx, call(ctx, "GET", "ueba/jobs"))
+
+
+@ueba_app.command("detectors")
+def ueba_detectors(ctx: typer.Context):
+    output(ctx, call(ctx, "GET", "ueba/detectors"))
+
+
 if __name__ == "__main__":
     app()

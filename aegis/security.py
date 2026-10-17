@@ -43,9 +43,11 @@ READ = {
         "system",
         "playbooks",
         "agents",
+        "ueba",
     )
 }
 ANALYST = READ | {
+    "ueba.update",
     "alerts.update",
     "incidents.create",
     "incidents.update",
@@ -55,6 +57,7 @@ ANALYST = READ | {
     "ai.use",
 }
 SENIOR = ANALYST | {
+    "ueba.execute",
     "rules.execute",
     "iocs.write",
     "playbooks.execute",

@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     queue_capacity: int = Field(100000, ge=100)
     worker_batch_size: int = Field(100, ge=1, le=500)
     worker_max_attempts: int = Field(6, ge=1, le=12)
+    ueba_baseline_days: int = Field(14, ge=7, le=30)
+    ueba_min_observations: int = Field(20, ge=10, le=10000)
+    ueba_min_active_days: int = Field(7, ge=3, le=7)
+    ueba_event_limit: int = Field(10000, ge=100, le=50000)
     soar_queue_capacity: int = Field(100, ge=1, le=10000)
     soar_batch_size: int = Field(20, ge=1, le=100)
     intel_auto_provider: Literal["none", "mock", "virustotal"] = "none"
