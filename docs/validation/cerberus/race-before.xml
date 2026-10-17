@@ -7,11 +7,11 @@ conflicting = True
         sessions, settings, org = system["app"].state.sessions, system["settings"], system["org"]
         engine = system["app"].state.engine
         barrier = Barrier(2)
-    
+
         def synchronize(connection, cursor, statement, parameters, context, executemany):
             if statement.startswith("SELECT events_metadata.id,") and " IN (" in statement:
                 barrier.wait(timeout=10)
-    
+
         def submit(index):
             incoming = EventInput(
                 source="cerberus", source_sequence="same-sequence",
@@ -23,7 +23,7 @@ conflicting = True
             except ValueError as exc:
                 assert str(exc) == "Source sequence was reused with different evidence"
                 return "rejected"
-    
+
         event.listen(engine, "after_cursor_execute", synchronize)
         try:
             with ThreadPoolExecutor(max_workers=2) as executor:

@@ -50,17 +50,17 @@ capsys = <_pytest.capture.CaptureFixture object at 0x000002196756AE00>
     def test_gate_fails_when_no_tests_collected(mock_env_config, monkeypatch, capsys):
         """Condition: Pytest collects zero tests or fewer than 14 tests."""
         monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
-    
+
         mock_process = MagicMock()
         mock_process.returncode = 0
         mock_process.stdout = io.StringIO(
             "=================== 0 passed in 0.10s ===================\n"
         )
-    
+
         with patch("subprocess.Popen", return_value=mock_process):
             with pytest.raises(SystemExit) as exc_info:
                 integration_gate.main()
-    
+
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
 >       assert "RELEASE GATE FAILED: Expected at least 14 integration tests, got 0." in captured.err
@@ -77,15 +77,15 @@ capsys = <_pytest.capture.CaptureFixture object at 0x00000219663D2D50>
     def test_gate_succeeds_when_all_healthy_and_14_pass(mock_env_config, monkeypatch, capsys):
         """Condition: All services healthy and all 14 tests pass cleanly (Happy Path)."""
         monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
-    
+
         mock_process = MagicMock()
         mock_process.returncode = 0
         mock_process.stdout = io.StringIO(ALL_14_PASSED_STDOUT)
-    
+
         with patch("subprocess.Popen", return_value=mock_process):
 >           integration_gate.main()
 
-tests\test_ci_release_gate.py:238: 
+tests\test_ci_release_gate.py:238:
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
     def main() -> None:
@@ -93,16 +93,16 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
         if not env_file.exists():
             print("ERROR: .env file not found. Run 'python scripts/configure.py' first.", file=sys.stderr)
             sys.exit(1)
-    
+
         config = dotenv_values(env_file)
         postgres_pass = config.get("POSTGRES_PASSWORD")
         redis_pass = config.get("REDIS_PASSWORD")
         opensearch_pass = config.get("OPENSEARCH_PASSWORD")
-    
+
         if not postgres_pass or not redis_pass or not opensearch_pass:
             print("ERROR: Missing required service credentials in .env.", file=sys.stderr)
             sys.exit(1)
-    
+
         # 1. Verify loopback connectivity to external services
         print("=== CI Release Gate: Checking External Service Connectivity ===")
         services = [
@@ -110,7 +110,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
             ("Redis", "127.0.0.1", 6379),
             ("OpenSearch", "127.0.0.1", 9200),
         ]
-    
+
         port_timeout = int(os.environ.get("AEGIS_GATE_PORT_TIMEOUT", "15"))
         for name, host, port in services:
             print(f"Waiting for {name} ({host}:{port})...")
@@ -122,7 +122,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
                 )
                 sys.exit(1)
             print(f"  -> {name} is reachable on {host}:{port}.")
-    
+
         # 2. Build sanitized execution environment for integration test suite
         test_env = os.environ.copy()
         test_env.update(
@@ -137,7 +137,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
                 "AEGIS_INTEGRATION": "1",
             }
         )
-    
+
         # 3. Execute PostgreSQL concurrency and distributed connectivity test suites
         print("\n=== CI Release Gate: Executing Mandatory Integration Suites ===")
         cmd = [
@@ -150,7 +150,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
             "--tb=short",
             "-rA",
         ]
-    
+
         process = subprocess.Popen(  # noqa: S603  # nosec B603
             cmd,
             cwd=ROOT,
@@ -159,17 +159,17 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
             stderr=subprocess.STDOUT,
             text=True,
         )
-    
+
         output_lines: list[str] = []
         assert process.stdout is not None
         for line in iter(process.stdout.readline, ""):
             output_lines.append(line)
             sys.stdout.write(line)
             sys.stdout.flush()
-    
+
         process.wait()
         full_output = "".join(output_lines)
-    
+
         # 4. Enforce strict Zero-Skip policy
         # Match patterns like: "13 passed in 12.34s" or "12 passed, 1 skipped in ..."
         summary_match = re.search(r"=+\s*(.+?)\s*in\s+[\d\.]+", full_output)
@@ -179,33 +179,33 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
                 file=sys.stderr,
             )
             sys.exit(1)
-    
+
         summary_str = summary_match.group(1)
-    
+
         passed_match = re.search(r"(\d+)\s+passed", summary_str)
         skipped_match = re.search(r"(\d+)\s+skipped", summary_str)
         failed_match = re.search(r"(\d+)\s+failed", summary_str)
         error_match = re.search(r"(\d+)\s+error", summary_str)
-    
+
         passed_count = int(passed_match.group(1)) if passed_match else 0
         skipped_count = int(skipped_match.group(1)) if skipped_match else 0
         failed_count = int(failed_match.group(1)) if failed_match else 0
         error_count = int(error_match.group(1)) if error_match else 0
-    
+
         deselected_match = re.search(r"(\d+)\s+deselected", summary_str)
         deselected_count = int(deselected_match.group(1)) if deselected_match else 0
-    
+
         print("\n=== CI Release Gate Verification Summary ===")
         print(f"Passed:     {passed_count}")
         print(f"Failed:     {failed_count}")
         print(f"Errors:     {error_count}")
         print(f"Skipped:    {skipped_count}")
         print(f"Deselected: {deselected_count}")
-    
+
         if process.returncode != 0 or failed_count > 0 or error_count > 0:
             print("RELEASE GATE FAILED: Integration tests encountered failures or errors.", file=sys.stderr)
             sys.exit(1)
-    
+
         if skipped_count > 0:
             print(
                 f"RELEASE GATE FAILED: {skipped_count} test(s) were skipped.\n"
@@ -213,7 +213,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
                 file=sys.stderr,
             )
             sys.exit(1)
-    
+
         if deselected_count > 0:
             print(
                 f"RELEASE GATE FAILED: {deselected_count} test(s) were deselected.\n"
@@ -221,7 +221,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
                 file=sys.stderr,
             )
             sys.exit(1)
-    
+
         if passed_count < len(MANDATORY_INTEGRATION_TESTS):
             print(
                 f"RELEASE GATE FAILED: Expected at least {len(MANDATORY_INTEGRATION_TESTS)} integration tests, got {passed_count}.",
@@ -274,7 +274,7 @@ capsys = <_pytest.capture.CaptureFixture object at 0x00000219690335B0>
     def test_gate_fails_when_mandatory_test_renamed_or_missing(mock_env_config, monkeypatch, capsys):
         """Condition: 14 tests pass but a required mandatory test was renamed/omitted and replaced with dummy."""
         monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
-    
+
         # 14 tests pass, but test_real_dependency_connectivity is missing, replaced by test_dummy_extra
         tampered_stdout = (
             "tests/test_postgres_integration.py::test_postgres_concurrent_rate_limiting PASSED\n"
@@ -293,15 +293,15 @@ capsys = <_pytest.capture.CaptureFixture object at 0x00000219690335B0>
             "tests/test_integration.py::test_dummy_extra PASSED\n"
             "=================== 14 passed in 15.20s ===================\n"
         )
-    
+
         mock_process = MagicMock()
         mock_process.returncode = 0
         mock_process.stdout = io.StringIO(tampered_stdout)
-    
+
         with patch("subprocess.Popen", return_value=mock_process):
             with pytest.raises(SystemExit) as exc_info:
                 integration_gate.main()
-    
+
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
 >       assert "The following mandatory integration test(s) did not execute and pass:" in captured.err
@@ -319,15 +319,15 @@ capsys = <_pytest.capture.CaptureFixture object at 0x0000021969193D90>
         """Condition: Zero secret leakage across all console streams."""
         secret = mock_env_config["secret"]
         monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
-    
+
         mock_process = MagicMock()
         mock_process.returncode = 0
         mock_process.stdout = io.StringIO(ALL_14_PASSED_STDOUT)
-    
+
         with patch("subprocess.Popen", return_value=mock_process):
 >           integration_gate.main()
 
-tests\test_ci_release_gate.py:315: 
+tests\test_ci_release_gate.py:315:
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
     def main() -> None:
@@ -335,16 +335,16 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
         if not env_file.exists():
             print("ERROR: .env file not found. Run 'python scripts/configure.py' first.", file=sys.stderr)
             sys.exit(1)
-    
+
         config = dotenv_values(env_file)
         postgres_pass = config.get("POSTGRES_PASSWORD")
         redis_pass = config.get("REDIS_PASSWORD")
         opensearch_pass = config.get("OPENSEARCH_PASSWORD")
-    
+
         if not postgres_pass or not redis_pass or not opensearch_pass:
             print("ERROR: Missing required service credentials in .env.", file=sys.stderr)
             sys.exit(1)
-    
+
         # 1. Verify loopback connectivity to external services
         print("=== CI Release Gate: Checking External Service Connectivity ===")
         services = [
@@ -352,7 +352,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
             ("Redis", "127.0.0.1", 6379),
             ("OpenSearch", "127.0.0.1", 9200),
         ]
-    
+
         port_timeout = int(os.environ.get("AEGIS_GATE_PORT_TIMEOUT", "15"))
         for name, host, port in services:
             print(f"Waiting for {name} ({host}:{port})...")
@@ -364,7 +364,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
                 )
                 sys.exit(1)
             print(f"  -> {name} is reachable on {host}:{port}.")
-    
+
         # 2. Build sanitized execution environment for integration test suite
         test_env = os.environ.copy()
         test_env.update(
@@ -379,7 +379,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
                 "AEGIS_INTEGRATION": "1",
             }
         )
-    
+
         # 3. Execute PostgreSQL concurrency and distributed connectivity test suites
         print("\n=== CI Release Gate: Executing Mandatory Integration Suites ===")
         cmd = [
@@ -392,7 +392,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
             "--tb=short",
             "-rA",
         ]
-    
+
         process = subprocess.Popen(  # noqa: S603  # nosec B603
             cmd,
             cwd=ROOT,
@@ -401,17 +401,17 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
             stderr=subprocess.STDOUT,
             text=True,
         )
-    
+
         output_lines: list[str] = []
         assert process.stdout is not None
         for line in iter(process.stdout.readline, ""):
             output_lines.append(line)
             sys.stdout.write(line)
             sys.stdout.flush()
-    
+
         process.wait()
         full_output = "".join(output_lines)
-    
+
         # 4. Enforce strict Zero-Skip policy
         # Match patterns like: "13 passed in 12.34s" or "12 passed, 1 skipped in ..."
         summary_match = re.search(r"=+\s*(.+?)\s*in\s+[\d\.]+", full_output)
@@ -421,33 +421,33 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
                 file=sys.stderr,
             )
             sys.exit(1)
-    
+
         summary_str = summary_match.group(1)
-    
+
         passed_match = re.search(r"(\d+)\s+passed", summary_str)
         skipped_match = re.search(r"(\d+)\s+skipped", summary_str)
         failed_match = re.search(r"(\d+)\s+failed", summary_str)
         error_match = re.search(r"(\d+)\s+error", summary_str)
-    
+
         passed_count = int(passed_match.group(1)) if passed_match else 0
         skipped_count = int(skipped_match.group(1)) if skipped_match else 0
         failed_count = int(failed_match.group(1)) if failed_match else 0
         error_count = int(error_match.group(1)) if error_match else 0
-    
+
         deselected_match = re.search(r"(\d+)\s+deselected", summary_str)
         deselected_count = int(deselected_match.group(1)) if deselected_match else 0
-    
+
         print("\n=== CI Release Gate Verification Summary ===")
         print(f"Passed:     {passed_count}")
         print(f"Failed:     {failed_count}")
         print(f"Errors:     {error_count}")
         print(f"Skipped:    {skipped_count}")
         print(f"Deselected: {deselected_count}")
-    
+
         if process.returncode != 0 or failed_count > 0 or error_count > 0:
             print("RELEASE GATE FAILED: Integration tests encountered failures or errors.", file=sys.stderr)
             sys.exit(1)
-    
+
         if skipped_count > 0:
             print(
                 f"RELEASE GATE FAILED: {skipped_count} test(s) were skipped.\n"
@@ -455,7 +455,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
                 file=sys.stderr,
             )
             sys.exit(1)
-    
+
         if deselected_count > 0:
             print(
                 f"RELEASE GATE FAILED: {deselected_count} test(s) were deselected.\n"
@@ -463,7 +463,7 @@ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
                 file=sys.stderr,
             )
             sys.exit(1)
-    
+
         if passed_count < len(MANDATORY_INTEGRATION_TESTS):
             print(
                 f"RELEASE GATE FAILED: Expected at least {len(MANDATORY_INTEGRATION_TESTS)} integration tests, got {passed_count}.",

@@ -6,22 +6,22 @@ caplog = &lt;_pytest.logging.LogCaptureFixture object at 0x00000246F2BABE00&gt;
         sessions, settings, org = system["app"].state.sessions, system["settings"], system["org"]
         with sessions.begin() as db:
             ingest(db, settings, org, [EventInput(source="cerberus", raw_event="synthetic")], "test")
-    
+
         def fail(*args, **kwargs):
             raise ConnectionError("cerberus-sensitive-exception-payload")
-    
+
         monkeypatch.setattr("aegis.worker.detect_batch", fail)
         process_once(settings, sessions, system["app"].state.storage)
 &gt;       assert "cerberus-sensitive-exception-payload" not in caplog.text
 E       assert 'cerberus-se...tion-payload' not in 'ERROR    ae...on-payload\n'
-E         
+E
 E         'cerberus-sensitive-exception-payload' is contained here:
 E           g_failed: cerberus-sensitive-exception-payload
 E           Traceback (most recent call last):
 E             File "D:\Project\Aegis\aegis\worker.py", line 95, in process_once
 E               detect_batch(db, settings, org_records, redis=redis)
 E               ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...
-E         
+E
 E         ...Full output truncated (13 lines hidden), use '-vv' to show
 
 tests\test_cerberus.py:174: AssertionError</failure></testcase></testsuite></testsuites>

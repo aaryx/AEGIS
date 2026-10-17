@@ -20,4 +20,3 @@ Route (app)
 
 
 ○  (Static)  prerendered as static content
-
