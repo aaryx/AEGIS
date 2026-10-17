@@ -34,6 +34,7 @@ from aegis.db import (
     WindowState,
 )
 from aegis.detection import SQLState
+from aegis.parsers import digest
 from aegis.pipeline import detect_batch, ingest, seed_rules
 from aegis.schemas import EventInput
 from aegis.security import audit, rate_limit, verify_audit
@@ -972,13 +973,17 @@ def test_postgres_ioc_cache_and_lookup_persistence(pg_system):
     assert redis.ping() is True
 
     # 1. Ingest event with observables into real PostgreSQL
-    event_payload = {
+    raw = {
         "timestamp": datetime.now(UTC).isoformat(),
         "source_ip": "198.51.100.55",
         "destination_ip": "203.0.113.88",
         "network": {"domain": "malicious.example.test"},
         "url": "https://malicious.example.test/beacon",
         "file": {"sha256": "a" * 64},
+    }
+    event_payload = {
+        "raw_event": raw,
+        **raw,
     }
     extracted = extract(event_payload)
     assert len(extracted) >= 5
@@ -988,7 +993,7 @@ def test_postgres_ioc_cache_and_lookup_persistence(pg_system):
             organization_id=org,
             source="ioc-live-test",
             timestamp=datetime.now(UTC),
-            evidence_hash="1" * 64,
+            evidence_hash=digest(raw),
             payload=event_payload,
             state="PROCESSED",
         )
@@ -1261,11 +1266,23 @@ def test_postgres_cross_tenant_database_constraints(pg_system):
         org_b = org_b_row.id
 
         # Ingest Event for Org A and Event for Org B
+        raw_a = {"event": "a", "message": "event a"}
+        raw_b = {"event": "b", "message": "event b"}
         event_a = EventRecord(
-            organization_id=org_a, source="s", timestamp=datetime.now(UTC), evidence_hash="1" * 64, payload={}, state="PROCESSED"
+            organization_id=org_a,
+            source="s",
+            timestamp=datetime.now(UTC),
+            evidence_hash=digest(raw_a),
+            payload={"raw_event": raw_a, **raw_a},
+            state="PROCESSED",
         )
         event_b = EventRecord(
-            organization_id=org_b, source="s", timestamp=datetime.now(UTC), evidence_hash="2" * 64, payload={}, state="PROCESSED"
+            organization_id=org_b,
+            source="s",
+            timestamp=datetime.now(UTC),
+            evidence_hash=digest(raw_b),
+            payload={"raw_event": raw_b, **raw_b},
+            state="PROCESSED",
         )
         obs_a = Observable(
             organization_id=org_a, type="ip", value="1.1.1.1", external_allowed=True, normalized_key="key_a"
