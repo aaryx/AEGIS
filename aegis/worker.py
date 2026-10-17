@@ -115,6 +115,13 @@ def process_once(settings, sessions, storage, redis=None, worker_id="local") -> 
         heartbeat(db, worker_id, processed)
         db.execute(delete(WindowState).where(WindowState.expires < time.time()))
     project_once(settings, sessions, storage)
+    from aegis.soar import process_workflows
+    processed += process_workflows(settings, sessions)
+    from aegis.intelligence import index_once
+    try:
+        index_once(settings, sessions)
+    except Exception:
+        logger.error("intelligence_extraction_failed")
     return processed
 
 

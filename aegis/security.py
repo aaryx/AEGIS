@@ -63,6 +63,7 @@ SENIOR = ANALYST | {
 }
 MANAGER = SENIOR | {"playbooks.approve", "audit.read"}
 ADMIN = MANAGER | {
+    "playbooks.write",
     "events.ingest",
     "rules.write",
     "users.manage",

@@ -162,3 +162,22 @@ def test_time_query_cannot_overflow_or_accept_space_unit():
     for query in ("timestamp > now()-999999999999999999999h", "timestamp > now()-5 "):
         with pytest.raises(ValueError):
             parse_query(query)
+
+
+def test_event_record_evidence_hash_integrity(system):
+    """Verify that ingested event records strictly bind evidence_hash to digest(raw_event)."""
+    from aegis.parsers import digest
+
+    events = simulate("benign")
+    client = system["client"]
+    client.post(
+        "/api/v1/events/ingest", json={"events": [event.model_dump(mode="json") for event in events]}
+    ).raise_for_status()
+
+    with system["app"].state.sessions() as db:
+        records = list(db.scalars(select(EventRecord)))
+        assert len(records) > 0
+        for rec in records:
+            raw = rec.payload.get("raw_event") if isinstance(rec.payload, dict) else None
+            assert raw is not None, "EventRecord payload must contain raw_event"
+            assert digest(raw) == rec.evidence_hash, "Evidence hash must match digest(raw_event)"

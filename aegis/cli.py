@@ -943,6 +943,85 @@ def run_retention_cli(
     output(ctx, call(ctx, "POST", "system/retention", params={"dry_run": dry_run}))
 
 
+soar_app = typer.Typer(help="Versioned SOAR workflows (separate from single-action responses).")
+app.add_typer(soar_app, name="soar")
+
+
+@soar_app.command("list")
+def soar_list(ctx: typer.Context):
+    output(ctx, call(ctx, "GET", "soar/playbooks"))
+
+
+@soar_app.command("validate")
+def soar_validate(ctx: typer.Context, file: Path):
+    output(ctx, call(ctx, "POST", "soar/validate", json=json.loads(file.read_text())))
+
+
+@soar_app.command("save")
+def soar_save(ctx: typer.Context, file: Path):
+    output(ctx, call(ctx, "POST", "soar/playbooks", json=json.loads(file.read_text())))
+
+
+@soar_app.command("execute")
+def soar_execute(ctx: typer.Context, identifier: str, source_type: str, source_id: str,
+                 idempotency_key: str, target_id: str = "", ioc_id: str = "", observable_id: str = "", dry_run: bool = True):
+    inputs = {k: v for k, v in {"target_id": target_id, "ioc_id": ioc_id, "observable_id": observable_id}.items() if v}
+    output(ctx, call(ctx, "POST", f"soar/playbooks/{identifier}/execute", json={
+        "source_type": source_type, "source_id": source_id, "inputs": inputs,
+        "idempotency_key": idempotency_key, "dry_run": dry_run}))
+
+
+@soar_app.command("inspect")
+def soar_inspect(ctx: typer.Context, identifier: str):
+    output(ctx, call(ctx, "GET", f"soar/executions/{identifier}"))
+
+
+@soar_app.command("approve")
+def soar_approve(ctx: typer.Context, identifier: str):
+    output(ctx, call(ctx, "POST", f"soar/executions/{identifier}/decision", json={"decision": "approve"}))
+
+
+@soar_app.command("decision")
+def soar_decision(ctx: typer.Context, identifier: str, decision: str):
+    output(ctx, call(ctx, "POST", f"soar/executions/{identifier}/decision", json={"decision": decision}))
+
+
+
+@groups["iocs"].command("enrich")
+def intel_enrich(ctx: typer.Context, kind: str, value: str, provider: str = "virustotal", refresh: bool = False):
+    output(ctx, call(ctx, "POST", "iocs/enrich", json={"observable": {"type": kind, "value": value},
+        "provider": provider, "refresh": refresh}))
+
+
+@groups["iocs"].command("enrich-batch")
+def intel_batch(ctx: typer.Context, file: Path, provider: str = "virustotal"):
+    output(ctx, call(ctx, "POST", "iocs/enrich-batch", json={"observables": json.loads(file.read_text(encoding="utf-8")), "provider": provider}))
+
+
+@groups["iocs"].command("enrich-source")
+def intel_source(ctx: typer.Context, source_type: str, source_id: str, provider: str = "virustotal"):
+    output(ctx, call(ctx, "POST", "iocs/enrich-source", json={"source_type": source_type, "source_id": source_id, "provider": provider}))
+
+
+@groups["iocs"].command("providers")
+def intel_providers(ctx: typer.Context):
+    output(ctx, call(ctx, "GET", "iocs/providers"))
+
+
+@groups["iocs"].command("observables")
+def intel_observables(ctx: typer.Context, offset: int = 0):
+    output(ctx, call(ctx, "GET", "iocs/observables", params={"offset": offset}))
+
+
+@groups["iocs"].command("inspect-observable")
+def intel_detail(ctx: typer.Context, identifier: str):
+    output(ctx, call(ctx, "GET", f"iocs/observables/{identifier}"))
+
+
+@groups["iocs"].command("enrichment-history")
+def intel_history(ctx: typer.Context, identifier: str, offset: int = 0):
+    output(ctx, call(ctx, "GET", f"iocs/enrichments/{identifier}/history", params={"offset": offset}))
+
+
 if __name__ == "__main__":
     app()
-

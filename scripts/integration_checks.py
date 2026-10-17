@@ -8,13 +8,40 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
 from aegis.config import get_settings
-from aegis.db import Alert, AlertEvent, AuditLog, EventRecord, Incident, Organization, WindowState, database
+from aegis.db import (
+    Alert,
+    AlertEvent,
+    AuditLog,
+    EventRecord,
+    Incident,
+    IncidentAlert,
+    Organization,
+    WindowState,
+    database,
+)
 from aegis.detection import SQLState
 from aegis.investigation import investigate
 from aegis.parsers import ParserRegistry
 from aegis.schemas import EventInput, SearchQuery
 from aegis.security import verify_audit
 from aegis.storage import OpenSearchStorage
+
+
+def select_attack_chain_incident(db):
+    """Deterministically select the simulated attack-chain incident linked to evidence."""
+    return db.scalar(
+        select(Incident)
+        .join(IncidentAlert, IncidentAlert.incident_id == Incident.id)
+        .join(Alert, Alert.id == IncidentAlert.alert_id)
+        .join(AlertEvent, AlertEvent.alert_id == Alert.id)
+        .join(EventRecord, EventRecord.id == AlertEvent.event_id)
+        .where(
+            Incident.title == "Potential account compromise",
+            EventRecord.source == "aegis-simulator",
+        )
+        .order_by(Incident.created_at.desc(), Incident.id.desc())
+        .limit(1)
+    )
 
 
 def main():
@@ -31,7 +58,7 @@ def main():
         if db.execute(text("SELECT rolsuper FROM pg_roles WHERE rolname=current_user")).scalar():
             raise RuntimeError("API runtime role must not be a database superuser")
         checks += 1
-        incident = db.scalar(select(Incident))
+        incident = select_attack_chain_incident(db)
         if not incident:
             raise RuntimeError("Run the synthetic attack chain first")
         organization_id = incident.organization_id

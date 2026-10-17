@@ -61,7 +61,8 @@ engine=create_engine(make_url(settings.database_url).set(database=os.environ['RE
 with Session(engine) as db:
     count=0
     for event in db.scalars(select(EventRecord).execution_options(yield_per=500)):
-        if digest(event.payload['raw_event']) != event.evidence_hash: raise RuntimeError('Evidence hash mismatch')
+        raw = event.payload.get('raw_event') if isinstance(event.payload, dict) else None
+        if raw is None or digest(raw) != event.evidence_hash: raise RuntimeError('Evidence hash mismatch')
         count+=1
     for org in db.scalars(select(Organization)):
         if not verify_audit(db, settings, org.id): raise RuntimeError(f'Audit chain mismatch for org {org.id} ({org.name})')

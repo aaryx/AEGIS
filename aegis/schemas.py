@@ -126,6 +126,10 @@ FIELDS = {
     "cloud.resource",
     "authentication.privileged",
     "metadata.ioc_match",
+    "metadata.intel_verdicts",
+    "metadata.intel_verdict",
+    "metadata.intel_confidence",
+    "metadata.intel_enrichment_ids",
     "metadata.asset_criticality",
 }
 ALIASES = {

@@ -1,5 +1,5 @@
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import func, select, tuple_
@@ -247,8 +247,16 @@ def track_entities(db, org, event, cache, max_entities: int = 15):
                 select(Entity).where(Entity.organization_id == org, Entity.type == kind, Entity.value == value)
             )
         cache[key] = entity
-        observed = datetime.fromisoformat(event["timestamp"])
-        from datetime import UTC
+        ts = event.get("timestamp")
+        if isinstance(ts, datetime):
+            observed = ts.astimezone(UTC) if ts.tzinfo else ts.replace(tzinfo=UTC)
+        elif isinstance(ts, str):
+            try:
+                observed = datetime.fromisoformat(ts).astimezone(UTC)
+            except (ValueError, TypeError):
+                observed = datetime.now(UTC)
+        else:
+            observed = datetime.now(UTC)
 
         previous = (
             entity.last_seen.replace(tzinfo=UTC)
@@ -378,11 +386,28 @@ def detect_batch(db, settings, records, redis=None):
                 db.add(IOCMatch(ioc_id=ioc.id, event_id=record.id))
         entities = track_entities(db, org, event, cache, max_entities=getattr(settings, "max_entities_per_event", 15))
         record.payload = event
+        # Cache-only detection overlay; never alter the persisted event/evidence payload.
+        from aegis.intelligence import detection_context
+        try:
+            with db.begin_nested():
+                context = detection_context(db, org, event)
+        except Exception:
+            context = {"intel_verdict": "unknown", "intel_verdicts": ["unknown"], "intel_confidence": None, "intel_enrichment_ids": []}
+        event = {**event, "metadata": {**event.get("metadata", {}), **context}}
         for row, rule in rules:
             explanation = evaluate(rule, event, state, org)
             if not explanation:
                 continue
-            stamp = datetime.fromisoformat(event["timestamp"])
+            ts = event.get("timestamp")
+            if isinstance(ts, datetime):
+                stamp = ts.astimezone(UTC) if ts.tzinfo else ts.replace(tzinfo=UTC)
+            elif isinstance(ts, str):
+                try:
+                    stamp = datetime.fromisoformat(ts).astimezone(UTC)
+                except (ValueError, TypeError):
+                    stamp = datetime.now(UTC)
+            else:
+                stamp = datetime.now(UTC)
             fingerprint = digest(
                 [
                     org,
@@ -439,8 +464,6 @@ def detect_batch(db, settings, records, redis=None):
                 if rule.severity == "critical":
                     db.add(Notification(organization_id=org, title=rule.name, resource_id=alert.id))
             else:
-                from datetime import UTC
-
                 previous = (
                     alert.last_seen.replace(tzinfo=UTC) if alert.last_seen.tzinfo is None else alert.last_seen
                 )
@@ -526,7 +549,7 @@ def detect_batch(db, settings, records, redis=None):
                 .values(event_id=record.id, organization_id=org)
                 .on_conflict_do_nothing(index_elements=["event_id"])
             )
-        collector = collectors.get(event["collector"])
+        collector = collectors.get(event.get("collector"))
         if collector:
             collector.events_processed += 1
         db.flush()

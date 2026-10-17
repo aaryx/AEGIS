@@ -32,6 +32,7 @@ def owned(db, model, resource_id, organization_id):
 
 
 def investigate(db, organization_id, resource_id):
+    from aegis.intelligence import source_context
     if resource_id.startswith("ALT-"):
         resource = owned(db, Alert, resource_id, organization_id)
         alerts = [resource]
@@ -123,6 +124,7 @@ def investigate(db, organization_id, resource_id):
         "relationships": [as_dict(item) for item in relationships],
         "related_alerts": [as_dict(item) for item in related],
         "iocs": [as_dict(ioc) for ioc in iocs],
+        "intelligence": source_context(db, organization_id, events),
         "mitre_techniques": sorted({t for alert in alerts for t in alert.mitre_techniques}),
         "notes": [as_dict(note) for note in notes],
         "activity": [as_dict(item) for item in activity],

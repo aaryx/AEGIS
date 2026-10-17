@@ -607,3 +607,11 @@ Security vulnerabilities are taken seriously. If you discover a security vulnera
 - **Contributing:** Contributions, bug fixes, and detection rules are welcome. Please read [docs/contributing.md](docs/contributing.md) before submitting pull requests.
 
 Copyright (c) 2026 Aaryan Singh. All rights reserved.
+
+## SOAR workflow automation
+
+Versioned, tenant-scoped response workflows are available in the console's Playbooks page and `aegis soar` CLI. The existing worker advances durable steps with approval gates, dry runs, safe containment simulations, and audit history. See [SOAR architecture, API, migration and operation](docs/soar.md). Apply Alembic revision `0009` before using this feature.
+
+## IOC enrichment and threat intelligence
+
+The existing Threat Intelligence view and `aegis iocs` CLI support normalized observables, optional VirusTotal reports, labelled mock fixtures, durable lookup history, and attributed investigation/SOAR context. See [provider setup, API, safety controls and verification handoff](docs/intelligence.md). Apply migration `0010`; the existing notification worker handles provider lookups. Providers and automatic lookup are disabled by default.

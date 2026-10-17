@@ -25,7 +25,11 @@ def test_clean_install_and_repeated_migration(tmp_path, monkeypatch):
             "replay_matches",
         } <= set(inspect(engine).get_table_names())
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0008"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0010"
+        assert {"intel_observables", "intel_observable_events", "intel_enrichments", "intel_history"} <= set(
+            inspect(engine).get_table_names()
+        )
+        assert {"soar_playbooks", "soar_versions", "soar_runs"} <= set(inspect(engine).get_table_names())
         assert {"storylines", "storyline_members"} <= set(inspect(engine).get_table_names())
         engine.dispose()
     finally:
@@ -79,6 +83,16 @@ def test_stepwise_schema_migration_chain(tmp_path, monkeypatch):
         with engine.connect() as conn:
             assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0007"
 
+        # 4. 0008 to 0010 (Storylines, SOAR, Threat Intelligence)
+        for rev in ["0008", "0009", "0010"]:
+            command.upgrade(cfg, rev)
+            with engine.connect() as conn:
+                assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == rev
+
+        insp_head = inspect(engine)
+        tables_head = set(insp_head.get_table_names())
+        assert {"storylines", "soar_playbooks", "soar_versions", "soar_runs", "intel_observables", "intel_enrichments"} <= tables_head
+
         engine.dispose()
     finally:
         get_settings.cache_clear()
@@ -97,5 +111,25 @@ def test_downgrade_policy_rejection(tmp_path, monkeypatch):
         command.upgrade(cfg, "head")
         with pytest.raises(RuntimeError, match="Destructive downgrade is disabled"):
             command.downgrade(cfg, "-1")
+    finally:
+        get_settings.cache_clear()
+
+
+def test_intelligence_upgrade_from_existing_events_schema(tmp_path, monkeypatch):
+    url = f"sqlite:///{tmp_path / 'intel-upgrade.db'}"
+    monkeypatch.setenv("DATABASE_URL", url)
+    get_settings.cache_clear()
+    try:
+        cfg = Config("alembic.ini")
+        command.upgrade(cfg, "0009")
+        engine = create_engine(url)
+        # Reproduce the real pre-feature event schema (0001 uses current ORM metadata).
+        with engine.begin() as connection:
+            connection.execute(text("DROP INDEX ix_events_metadata_intel_indexed"))
+            connection.execute(text("ALTER TABLE events_metadata DROP COLUMN intel_indexed"))
+        command.upgrade(cfg, "0010")
+        assert "intel_indexed" in {c["name"] for c in inspect(engine).get_columns("events_metadata")}
+        assert "intel_history" in inspect(engine).get_table_names()
+        engine.dispose()
     finally:
         get_settings.cache_clear()

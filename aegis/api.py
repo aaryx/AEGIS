@@ -317,6 +317,10 @@ def create_app(settings: Settings | None = None):
     from aegis.integrations import router as integration_router
 
     app.include_router(integration_router)
+    from aegis.soar_api import router as soar_router
+    app.include_router(soar_router)
+    from aegis.intel_api import router as intel_router
+    app.include_router(intel_router)
 
     @app.middleware("http")
     async def request_context(request: Request, call_next):

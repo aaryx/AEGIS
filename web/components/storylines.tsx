@@ -5,6 +5,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, display, Row, User } from "@/lib/api";
 import { Badge, DataTable, State } from "./ui";
 
+import { IntelligenceContext } from "./intelligence";
+
 type Story = Row & { incident_id: string; window_seconds: number; summary: {
   confidence: number; risk_score: number; first_seen: string; last_seen: string;
   risk_factors: Record<string, number>; timeline: Row[]; mitre_techniques: string[];
@@ -39,7 +41,7 @@ export function Storylines({ user, id, onOpen }: { user: User; id?: string; onOp
       <p>Risk factors: {Object.entries(story.summary.risk_factors).map(([k, v]) => `${k.replaceAll("_", " ")}: ${v}`).join("; ")}</p>
       <div className="tags">{story.summary.mitre_techniques.map(t => <span className="tag mono" key={t}>{t}</span>)}</div>
       <button onClick={() => onOpen("incidents", { id: story.incident_id })}>Investigate incident</button>
-      <h3>Detection timeline and correlation evidence</h3>
+      <IntelligenceContext user={user} sourceType="storyline" sourceId={id} onOpen={onOpen} /><h3>Detection timeline and correlation evidence</h3>
       {story.summary.timeline.map(item => <article key={String(item.alert_id)} className="panel padded">
         <p>{display(item.timestamp)} · <Badge value={String(item.severity)} /> {display(item.rule_name)}</p>
         <button onClick={() => onOpen("alerts", { id: String(item.alert_id) })}>Open detection evidence</button>
