@@ -62,6 +62,7 @@ revalidated in the workflow engine. No action adapter or permission was expanded
 | CER-02 | Medium: altered audit sequence counts and disagreement between organization/AuditHead pointers passed verification. | The `sequence` and `organization_head` cases failed before the fix. Check sequence count against row count and both head pointers before HMAC traversal. |
 | CER-03 | High ingestion correctness: simultaneous source-sequence reuse with different raw evidence could be acknowledged as a duplicate. The first stored record survived, but the second caller received a misleading acknowledgement. | Two database reads are synchronized with a barrier before either insert. The unique-key loser previously skipped hash comparison. Re-read the winner's evidence hash after the conflict and reject differing evidence inside the transaction. Identical evidence still deduplicates. |
 | CER-04 | Medium confidentiality: worker exception logging included arbitrary exception messages and traceback text. | A synthetic `ConnectionError` containing a sentinel appeared in captured logs before the fix. Detection/search worker paths now log stable event names, exception class and event count. The API catch-all uses the same policy, retaining request ID and generic HTTP 503. |
+| CER-05 | High acceptance reliability: bounded polling in acceptance drill prematurely aborted upon finding an incomplete investigation before all 16 events and IOCs/entities correlated. | `test_acceptance_waits_for_complete_investigation` reproduced the premature exit and incomplete assertion failure (`acceptance-before.xml`). `wait_for_investigation` in `scripts/acceptance.py` now polls until all 16 events, IOCs, and entities are present before proceeding. Verified with `acceptance-after.xml` and full test suite. |
 
 Integrating the PostgreSQL regression also exposed a release-gate parser that
 could not recognize parameterized pytest node names. The gate now requires both
@@ -77,8 +78,10 @@ Before/after machine-readable evidence lives in `validation/cerberus/`:
 `before.xml` records three audit failures and two passing controls;
 `race-before.xml` records one conflict failure and one identical-duplicate pass;
 `log-before.xml` records the sensitive-log failure;
-`cerberus-final.xml` records all 12 new local tests passing. These historical
-expected failures are distinct from final regression failures.
+`acceptance-before.xml` records four premature exit/incomplete investigation failures;
+`cerberus-final.xml` records all 12 new local tests passing;
+`acceptance-after.xml` records 32 tests passing (4 acceptance recovery, 12 Cerberus, and 16 gate tests).
+These historical expected failures are distinct from final regression failures.
 
 ## Automated scenario coverage
 
@@ -91,7 +94,7 @@ expected failures are distinct from final regression failures.
 | SOAR | Existing tests cover revoked approval, two-person authorization, restart, bounded retries, timeout rollback, pinned versions, tenant scope and simulated containment. No claim of exactly-once external side effects. |
 | Providers/dependencies | Existing mocked intelligence/integration tests cover malformed responses, missing credentials, HTTP errors/timeouts, SSRF protections and rate/size bounds. New API injection verifies HTTP 503, no mutation and no sensitive exception text. Real service outage/connection recovery remains a staging requirement. |
 | Concurrency | New barriers coordinate audit writers and the exact ingestion read/insert race without sleeps. The PostgreSQL version is added to the mandatory zero-skip integration gate. Existing suites cover rate limiting, window updates, workflows, findings and transaction rollback. |
-| Frontend/CLI | Existing CLI regression tests run in pytest. Real local API/Next.js Playwright analyst flow passes. Two UEBA browser cases require Compose fixtures and remain locally skipped. |
+| Frontend/CLI | Existing CLI regression tests run in pytest. Real local API/Next.js Playwright analyst flow passes. Two UEBA browser cases require Compose fixtures and remain locally skipped. New `tests/test_acceptance_recovery.py` verifies bounded investigation polling and strict failure on permanently missing evidence in `scripts/acceptance.py`. |
 
 ## Event-limit resolution
 
@@ -167,8 +170,8 @@ optimization was made from these numbers.
 
 | Final local check | Passed | Failed/errors | Skipped |
 |---|---:|---:|---:|
-| Complete backend (`release-backend.xml`) | 370 | 0 | 26 |
-| New Cerberus subset (included above) | 12 | 0 | 0 |
+| Complete backend (`release-backend.xml`) | 374 | 0 | 26 |
+| Cerberus + Acceptance subset (included above) | 16 | 0 | 0 |
 | Frontend Vitest | 27 | 0 | 0 |
 | Detection rule cases | 34 | 0 | 0 |
 | Local browser E2E | 1 | 0 | 2 |
@@ -186,7 +189,7 @@ both negative parameter-case tests. No failures were suppressed.
 Use the installed virtual environment (`.venv/Scripts/python` on Windows):
 
 ```text
-python -m pytest tests/test_cerberus.py -q
+python -m pytest tests/test_cerberus.py tests/test_acceptance_recovery.py -q
 python -m pytest --cov=aegis --cov-report=term --junitxml=backend.xml
 python -m ruff check aegis tests scripts
 python -m ruff format --check aegis tests scripts
