@@ -393,3 +393,104 @@ def test_existing_sources_and_evidence_fields(system, kind):
         .status_code
         == 409
     )
+
+
+def test_matches_condition_safe_numeric_comparison():
+    from aegis.soar import Condition, matches
+
+    cond_risk = Condition(field="risk_score", op="gte", value=50)
+    assert matches(cond_risk, {"risk_score": "75"}) is True
+    assert matches(cond_risk, {"risk_score": "25"}) is False
+    assert matches(cond_risk, {"risk_score": "invalid"}) is False
+    assert matches(cond_risk, {"risk_score": None}) is False
+    assert matches(cond_risk, {"risk_score": 50}) is True
+
+    cond_intel = Condition(field="intel_confidence", op="gte", value=80)
+    assert matches(cond_intel, {"intel_confidence": "90"}) is True
+    assert matches(cond_intel, {"intel_confidence": "70"}) is False
+    assert matches(cond_intel, {"intel_confidence": 80}) is True
+    assert matches(cond_intel, {"intel_confidence": "unparseable"}) is False
+
+    cond_sev = Condition(field="severity", op="gte", value="high")
+    assert matches(cond_sev, {"severity": "critical"}) is True
+    assert matches(cond_sev, {"severity": "medium"}) is False
+    assert matches(cond_sev, {"severity": "invalid_sev"}) is False
+
+
+def test_soar_audit_resource_id_on_decision_rejection_and_trigger(system):
+    from sqlalchemy import select
+
+    from aegis.db import AuditLog
+
+    book, source, _ = setup(system)
+    # Trigger with non-existent source triggers 404 rejection
+    resp = system["client"].post(
+        f"/api/v1/soar/playbooks/{book['id']}/execute",
+        json={"source_type": "incident", "source_id": "INC-nonexistent-00000", "idempotency_key": "bad-source-001"},
+    )
+    assert resp.status_code == 404
+    with system["app"].state.sessions() as db:
+        rejected_entry = db.scalar(
+            select(AuditLog)
+            .where(
+                AuditLog.organization_id == system["org"],
+                AuditLog.action == "soar.trigger_rejected",
+                AuditLog.resource_id == book["id"],
+            )
+            .order_by(AuditLog.created_at.desc())
+        )
+        assert rejected_entry is not None
+        assert rejected_entry.resource_id == book["id"]
+
+    # Now create a legitimate execution awaiting approval
+    doc = copy.deepcopy(DOC)
+    doc["steps"][0]["action"] = "simulate_block_ip"
+    doc["input_schema"] = {"target_id": "entity"}
+    approval_book = system["client"].post(
+        "/api/v1/soar/playbooks", json={"name": "ApprovalReq", "definition": doc, "enabled": True}
+    ).json()
+    with system["app"].state.sessions.begin() as db:
+        tgt = Entity(organization_id=system["org"], type="ip", value="198.51.100.1")
+        db.add(tgt)
+        db.flush()
+        target_id = tgt.id
+    run_resp = system["client"].post(
+        f"/api/v1/soar/playbooks/{approval_book['id']}/execute",
+        json={
+            "source_type": "incident",
+            "source_id": source,
+            "inputs": {"target_id": target_id},
+            "idempotency_key": "appr-run-001",
+            "dry_run": False,
+        },
+    )
+    assert run_resp.status_code == 200
+    run_id = run_resp.json()["id"]
+    tick(system)
+    assert get(system, run_id)["status"] == "WAITING_FOR_APPROVAL"
+
+    # User with VIEWER token lacks playbooks.approve -> gets 403
+    read_client = system["client"]
+    orig_auth = read_client.headers.get("Authorization")
+    read_client.headers["Authorization"] = "Bearer " + system["tokens"]["VIEWER"]
+    dec_resp = read_client.post(
+        f"/api/v1/soar/executions/{run_id}/decision",
+        json={"decision": "approve"},
+    )
+    assert dec_resp.status_code == 403
+    read_client.headers["Authorization"] = orig_auth
+
+    # Verify audit has resource_id == run_id
+    with system["app"].state.sessions() as db:
+        dec_audit = db.scalar(
+            select(AuditLog)
+            .where(
+                AuditLog.organization_id == system["org"],
+                AuditLog.action == "soar.decision_rejected",
+                AuditLog.resource_id == run_id,
+            )
+            .order_by(AuditLog.created_at.desc())
+        )
+        assert dec_audit is not None
+        assert dec_audit.resource_id == run_id
+

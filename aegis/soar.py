@@ -177,10 +177,21 @@ def matches(condition, context):
     value = context.get(condition.field)
     expected = condition.value
     if condition.field == "severity":
-        value, expected = SEVERITIES.get(value, -1), SEVERITIES[expected]
+        value, expected = SEVERITIES.get(value, -1), SEVERITIES.get(expected, -1)
+    elif condition.field in {"risk_score", "intel_confidence"}:
+        try:
+            if value is not None and not isinstance(value, bool):
+                value = int(value)
+        except (ValueError, TypeError):
+            return False
     if value is None:
         return False
-    return value == expected if condition.op == "eq" else value >= expected
+    if condition.op == "eq":
+        return value == expected
+    try:
+        return value >= expected
+    except TypeError:
+        return False
 
 
 def version_document(db, run):

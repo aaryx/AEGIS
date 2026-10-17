@@ -279,7 +279,11 @@ def analyze(db, org, end, cfg, refresh_only=False):
             )
             db.add(finding)
             db.flush()
+            seen_evidence_ids: set[str] = set()
             for row in evidence:
+                if row["id"] in seen_evidence_ids:
+                    continue
+                seen_evidence_ids.add(row["id"])
                 db.add(
                     BehaviorEvidence(
                         organization_id=org, finding_id=fid, event_id=row["id"], evidence_hash=row["hash"]

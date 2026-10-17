@@ -350,3 +350,75 @@ def test_soar_dry_run_never_queues_provider(system):
     assert system["client"].get(f"/api/v1/soar/executions/{run['id']}").json()["status"] == "SUCCEEDED"
     with system["app"].state.sessions() as db:
         assert not list(db.scalars(select(Enrichment)))
+
+
+def test_related_observables_tenant_isolation(system):
+    """Verify that related() strictly isolates alerts, incidents, and storylines by organization."""
+    from datetime import UTC, datetime
+
+    from aegis.db import Alert, AlertEvent, EventRecord, Incident, IncidentAlert
+    from aegis.intelligence import related
+
+    org_a = system["org"]
+    org_b = system["other"]
+    test_ip = "198.51.100.77"
+
+    # Seed in Tenant A
+    with system["app"].state.sessions.begin() as db:
+        obs_a = observe(db, org_a, "ip", test_ip)
+        obs_a_id = obs_a.id
+
+    # Seed in Tenant B with an event, alert, and incident linking to that IP
+    with system["app"].state.sessions.begin() as db:
+        obs_b = observe(db, org_b, "ip", test_ip)
+        ev_b = EventRecord(
+            id="ev-tenant-b-001",
+            organization_id=org_b,
+            timestamp=datetime.now(UTC),
+            evidence_hash="ev-hash-b",
+            source="syslog",
+            state="PROCESSED",
+            payload={"source_ip": test_ip},
+        )
+        alert_b = Alert(
+            id="ALT-tenant-b-001",
+            organization_id=org_b,
+            title="Tenant B Alert",
+            severity="high",
+            rule_id="rule-b",
+            rule_version=1,
+            fingerprint="fp-b-001",
+            correlation_key="ck-b-001",
+            confidence=90,
+            risk_score=80,
+            risk_factors={},
+            explanation={},
+            mitre_techniques=[],
+            entity_ids=[],
+            first_seen=datetime.now(UTC),
+            last_seen=datetime.now(UTC),
+        )
+        inc_b = Incident(
+            id="INC-tenant-b-001",
+            organization_id=org_b,
+            title="Tenant B Incident",
+            severity="high",
+        )
+        db.add_all([ev_b, alert_b, inc_b])
+        db.flush()
+        db.add(ObservableEvent(organization_id=org_b, observable_id=obs_b.id, event_id=ev_b.id))
+        db.add(AlertEvent(alert_id=alert_b.id, event_id=ev_b.id))
+        db.add(IncidentAlert(incident_id=inc_b.id, alert_id=alert_b.id))
+
+    # Tenant A queries related for obs_a
+    with system["app"].state.sessions() as db:
+        rel_a = related(db, org_a, obs_a_id)
+        # Must NOT leak Tenant B's alert, incident, or event
+        assert "ALT-tenant-b-001" not in rel_a["alerts"]
+        assert "INC-tenant-b-001" not in rel_a["incidents"]
+        assert "ev-tenant-b-001" not in rel_a["events"]
+
+    # Also test via API endpoint: Tenant A client cannot access Tenant B's observable
+    api_resp = system["client"].get(f"/api/v1/iocs/observables/{obs_b.id}/related")
+    assert api_resp.status_code == 404
+

@@ -1,3 +1,4 @@
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -470,3 +471,112 @@ def test_failure_sequence_window_boundary_and_sorting():
     assert "failure_then_success" in {r[0] for r in detect("user", [success, *reversed(rows)], base)}
     success["time"] += timedelta(microseconds=1)
     assert "failure_then_success" not in {r[0] for r in detect("user", [*rows, success], base)}
+
+
+def test_evidence_deduplication_prevents_unique_constraint_failure(system, monkeypatch):
+    """Verify that duplicate event entries yielded in evidence are deduplicated before DB insert."""
+    seed(system)
+    from aegis import ueba
+
+    orig_detect = ueba.detect
+
+    def mock_detect(kind, rows, base):
+        for detector, observed, expected, deviation, evidence in orig_detect(kind, rows, base):
+            # Duplicate the evidence rows to simulate duplicate hits
+            duplicated_evidence = list(evidence) + list(evidence)
+            yield detector, observed, expected, deviation, duplicated_evidence
+
+    monkeypatch.setattr(ueba, "detect", mock_detect)
+    with system["app"].state.sessions.begin() as db:
+        result = analyze(db, system["org"], end(), config(system["settings"]))
+        assert result["new_findings"] > 0
+    # Verify BehaviorEvidence rows are unique per (finding_id, event_id)
+    with system["app"].state.sessions() as db:
+        ev_count = db.scalar(
+            select(func.count()).select_from(BehaviorEvidence).where(BehaviorEvidence.organization_id == system["org"])
+        )
+        assert ev_count > 0
+
+
+def test_ueba_event_limit_below_at_and_above(system):
+    """Section 9: Test UEBA event limit below, at, and above the configured bound."""
+    cfg = config(system["settings"])
+    cfg["event_limit"] = 10
+    org = system["org"]
+    current_time = end()
+
+    # Seed 10 records
+    with system["app"].state.sessions.begin() as db:
+        for i in range(10):
+            db.add(
+                EventRecord(
+                    id=key(org, f"ev-lim-{i}"),
+                    organization_id=org,
+                    timestamp=current_time - timedelta(days=2, hours=i),
+                    evidence_hash=key(f"ev-hash-{i}"),
+                    source="auth-test",
+                    state="PROCESSED",
+                    payload={
+                        "username": "bob",
+                        "event_category": "authentication",
+                        "outcome": "success",
+                    },
+                )
+            )
+
+    # 1. Below limit (limit=15 with 10 records) -> succeeds
+    cfg_below = dict(cfg, event_limit=15)
+    with system["app"].state.sessions.begin() as db:
+        res = analyze(db, org, current_time, cfg_below)
+        assert res["events"] == 10
+
+    # 2. At limit (limit=10 with 10 records) -> succeeds
+    cfg_at = dict(cfg, event_limit=10)
+    with system["app"].state.sessions.begin() as db:
+        res = analyze(db, org, current_time, cfg_at)
+        assert res["events"] == 10
+
+    # 3. Add 1 more record to exceed limit (11 records with limit=10) -> ValueError
+    with system["app"].state.sessions.begin() as db:
+        db.add(
+            EventRecord(
+                id=key(org, "ev-lim-11"),
+                organization_id=org,
+                timestamp=current_time - timedelta(days=2, hours=11),
+                evidence_hash=key("ev-hash-11"),
+                source="auth-test",
+                state="PROCESSED",
+                payload={
+                    "username": "bob",
+                    "event_category": "authentication",
+                    "outcome": "success",
+                },
+            )
+        )
+
+    with system["app"].state.sessions.begin() as db:
+        with pytest.raises(ValueError, match="Event limit exceeded; no partial baseline was saved"):
+            analyze(db, org, current_time, cfg_at)
+
+    # 4. Verify in process_jobs: job fails cleanly, moves to FAILED (terminal), no partial state
+    with system["app"].state.sessions.begin() as db:
+        job = BehaviorJob(
+            id="job-limit-test",
+            organization_id=org,
+            window_end=current_time,
+            refresh_only=False,
+            state="PENDING",
+            available_at=time.time() - 10,
+            config=cfg_at,
+        )
+        db.add(job)
+
+    # Process job with worker
+    processed = process_jobs(system["settings"], system["app"].state.sessions)
+    assert processed == 1
+
+    with system["app"].state.sessions() as db:
+        j = db.get(BehaviorJob, "job-limit-test")
+        assert j.state == "FAILED"
+        assert "Event limit exceeded" in j.result.get("error", "")
+

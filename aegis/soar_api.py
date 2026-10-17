@@ -126,6 +126,7 @@ def execute(
             principal.organization_id,
             principal.user.id,
             "soar.trigger_rejected",
+            identifier,
             result="rejected",
             details={"status_code": exc.status_code},
         )
@@ -191,7 +192,7 @@ def decision(
 ):
     require_evidence_scope(principal)
     settings = request.app.state.settings
-    resource_id = ""
+    resource_id = identifier
 
     def reject(status, message):
         audit(

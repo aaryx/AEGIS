@@ -94,3 +94,46 @@ def test_enterprise_mfa_lifecycle_and_login_challenge(system):
     )
     assert success_login.status_code == 200
     assert "access_token" in success_login.json()
+
+
+def test_audit_verification_closed_failure_on_missing_or_tampered_head(system):
+    """Section 11: Audit integrity must fail closed when AuditHead is deleted, desynced, or tampered."""
+    from sqlalchemy import delete, select
+
+    from aegis.db import AuditHead, AuditLog
+
+    settings = system["app"].state.settings
+    org_id = system["org"]
+
+    # 1. Write audit entries
+    with system["app"].state.sessions.begin() as db:
+        for i in range(4):
+            audit(db, settings, org_id, actor="admin", action=f"op_{i}", resource_id=f"res_{i}")
+
+    # 2. Baseline passes
+    with system["app"].state.sessions() as db:
+        assert verify_audit(db, settings, org_id) is True
+
+    # 3. Attacker deletes AuditHead row -> verify_audit MUST fail closed (return False)
+    with system["app"].state.sessions.begin() as db:
+        db.execute(delete(AuditHead).where(AuditHead.organization_id == org_id))
+
+    with system["app"].state.sessions() as db:
+        assert verify_audit(db, settings, org_id) is False
+
+    # 4. Restore AuditHead but with mismatched sequence number -> return False
+    with system["app"].state.sessions.begin() as db:
+        # Re-fetch the last audit entry hash
+        last_log = db.scalar(
+            select(AuditLog).where(AuditLog.organization_id == org_id).order_by(AuditLog.created_at.desc())
+        )
+        head = AuditHead(
+            organization_id=org_id,
+            audit_head=last_log.entry_hash,
+            sequence_number=999,  # tampered sequence number
+        )
+        db.add(head)
+
+    with system["app"].state.sessions() as db:
+        assert verify_audit(db, settings, org_id) is False
+

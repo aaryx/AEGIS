@@ -1,0 +1,133 @@
+{
+  "python": "3.14.3",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "method": "SQLite WAL; 34 seeded rules; one worker; tracemalloc enabled; 1 warm-up; 3 repetitions",
+  "results": [
+    {
+      "events": 100,
+      "batch_size": 50,
+      "processed": 100,
+      "ingestion_seconds": 0.3621445000026142,
+      "ingestion_eps": 276.1328696122076,
+      "batch_p50_seconds": 0.1810691000027873,
+      "batch_p95_seconds": 0.18366600000445032,
+      "worker_seconds": 1.3157387000028393,
+      "worker_eps": 76.00293280100692,
+      "ueba_seconds": 0.07628130000375677,
+      "ueba_result": {
+        "events": 100,
+        "unique_observations": 100,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 1497,
+      "cpu_seconds": 1.609375,
+      "python_peak_bytes": 2163645
+    },
+    {
+      "events": 100,
+      "batch_size": 50,
+      "processed": 100,
+      "ingestion_seconds": 0.36006629999610595,
+      "ingestion_eps": 277.7266297931283,
+      "batch_p50_seconds": 0.18003034999856027,
+      "batch_p95_seconds": 0.18487069999537198,
+      "worker_seconds": 1.2838741000014124,
+      "worker_eps": 77.88925720979182,
+      "ueba_seconds": 0.07884180000110064,
+      "ueba_result": {
+        "events": 100,
+        "unique_observations": 100,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 1497,
+      "cpu_seconds": 1.65625,
+      "python_peak_bytes": 2304368
+    },
+    {
+      "events": 100,
+      "batch_size": 50,
+      "processed": 100,
+      "ingestion_seconds": 0.3641198000041186,
+      "ingestion_eps": 274.63488664683683,
+      "batch_p50_seconds": 0.1820571500029473,
+      "batch_p95_seconds": 0.18504810000013094,
+      "worker_seconds": 1.3393310000028578,
+      "worker_eps": 74.66414202298508,
+      "ueba_seconds": 0.0842488999987836,
+      "ueba_result": {
+        "events": 100,
+        "unique_observations": 100,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 1497,
+      "cpu_seconds": 1.71875,
+      "python_peak_bytes": 2304999
+    },
+    {
+      "events": 500,
+      "batch_size": 50,
+      "processed": 500,
+      "ingestion_seconds": 1.8337861000036355,
+      "ingestion_eps": 272.6599356375363,
+      "batch_p50_seconds": 0.18295600000419654,
+      "batch_p95_seconds": 0.19509950000065146,
+      "worker_seconds": 5.6302988000024925,
+      "worker_eps": 88.80523356944727,
+      "ueba_seconds": 0.12268479999329429,
+      "ueba_result": {
+        "events": 500,
+        "unique_observations": 500,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 6321,
+      "cpu_seconds": 7.078125,
+      "python_peak_bytes": 5676306
+    },
+    {
+      "events": 500,
+      "batch_size": 50,
+      "processed": 500,
+      "ingestion_seconds": 1.9806709000040428,
+      "ingestion_eps": 252.43971625926318,
+      "batch_p50_seconds": 0.1885559500005911,
+      "batch_p95_seconds": 0.2299302000028547,
+      "worker_seconds": 5.332998499994574,
+      "worker_eps": 93.75588611182035,
+      "ueba_seconds": 0.11877809999714373,
+      "ueba_result": {
+        "events": 500,
+        "unique_observations": 500,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 6321,
+      "cpu_seconds": 6.921875,
+      "python_peak_bytes": 5434348
+    },
+    {
+      "events": 500,
+      "batch_size": 50,
+      "processed": 500,
+      "ingestion_seconds": 1.971436799998628,
+      "ingestion_eps": 253.6221298092579,
+      "batch_p50_seconds": 0.1865486000024248,
+      "batch_p95_seconds": 0.2985971999951289,
+      "worker_seconds": 5.453009800003201,
+      "worker_eps": 91.69248146220211,
+      "ueba_seconds": 0.12149630000203615,
+      "ueba_result": {
+        "events": 500,
+        "unique_observations": 500,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 6321,
+      "cpu_seconds": 7.171875,
+      "python_peak_bytes": 4447381
+    }
+  ]
+}

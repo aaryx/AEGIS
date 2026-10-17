@@ -1,0 +1,90 @@
+{
+  "project": "TITAN",
+  "baseline_sha": "ca329d816a3fa9d3fbc9599553f47e387140e907",
+  "branch": "feature/titan-hardening",
+  "final_local_backend": {
+    "passed": 381,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 26,
+    "total": 407,
+    "coverage_percent": 81,
+    "artifact": "release-backend.xml"
+  },
+  "frontend": {
+    "passed": 27,
+    "failed": 0,
+    "skipped": 0
+  },
+  "rules": {
+    "passed": 34,
+    "failed": 0
+  },
+  "browser_local": {
+    "passed": 1,
+    "failed": 0,
+    "skipped": 2
+  },
+  "checks": {
+    "ruff": "passed: 0 errors",
+    "mypy": "passed: 38 source files",
+    "bandit": "passed: no medium/high findings",
+    "pip_audit": "passed: no known vulnerabilities; editable project excluded",
+    "npm_audit": "passed: zero vulnerabilities",
+    "frontend_typecheck": "passed",
+    "frontend_build": "passed",
+    "format": "passed check rules"
+  },
+  "findings": {
+    "TITAN-01": {
+      "severity": "High",
+      "component": "UEBA Evidence UniqueConstraint",
+      "file": "aegis/ueba.py",
+      "test": "tests/test_ueba.py::test_evidence_deduplication_prevents_unique_constraint_failure"
+    },
+    "TITAN-02": {
+      "severity": "Medium",
+      "component": "SOAR Condition Safe Comparison",
+      "file": "aegis/soar.py",
+      "test": "tests/test_soar.py::test_matches_condition_safe_numeric_comparison"
+    },
+    "TITAN-03": {
+      "severity": "Low",
+      "component": "SOAR Decision/Trigger Audit Resource ID",
+      "file": "aegis/soar_api.py",
+      "test": "tests/test_soar.py::test_soar_audit_resource_id_on_decision_rejection_and_trigger"
+    },
+    "TITAN-04": {
+      "severity": "Medium",
+      "component": "Storylines Correlation Resilience",
+      "file": "aegis/storylines.py",
+      "test": "tests/test_storylines.py::test_correlate_resilience_missing_anchor_alert_or_incident"
+    },
+    "TITAN-05": {
+      "severity": "High",
+      "component": "Intelligence Observables Tenant Isolation",
+      "file": "aegis/intelligence.py",
+      "test": "tests/test_intelligence.py::test_related_observables_tenant_isolation"
+    },
+    "TITAN-06": {
+      "severity": "High",
+      "component": "Audit Verification Closed-Failure on Deleted Head",
+      "file": "aegis/security.py",
+      "test": "tests/test_audit_and_mfa.py::test_audit_verification_closed_failure_on_missing_or_tampered_head"
+    },
+    "TITAN-07": {
+      "severity": "Medium",
+      "component": "UEBA Event Limit Enforcement (Section 9)",
+      "file": "aegis/ueba.py",
+      "test": "tests/test_ueba.py::test_ueba_event_limit_below_at_and_above"
+    }
+  },
+  "locally_blocked": [
+    "Docker Compose startup and service integration",
+    "live database and Redis interruption",
+    "PostgreSQL backup/restore drill",
+    "Trivy container scans",
+    "Gitleaks executable unavailable",
+    "container SBOM generation"
+  ]
+}

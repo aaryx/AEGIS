@@ -222,10 +222,15 @@ def verify_audit(db, settings, organization_id: str) -> bool:
     org = db.get(Organization, organization_id)
     if not org:
         return False
-    if head and (head.sequence_number != len(records) or head.audit_head != org.audit_head):
+    if not head:
+        if records or org.audit_head != "0" * 64:
+            return False
+    elif head.sequence_number != len(records) or head.audit_head != org.audit_head:
         return False
     if not records:
-        return org.audit_head == "0" * 64
+        return org.audit_head == "0" * 64 and (
+            head is None or (head.sequence_number == 0 and head.audit_head == "0" * 64)
+        )
     by_previous = {record.previous_hash: record for record in records}
     previous = "0" * 64
     visited = 0
