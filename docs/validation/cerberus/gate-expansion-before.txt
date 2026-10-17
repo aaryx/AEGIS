@@ -1,0 +1,581 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.3, pytest-9.0.3, pluggy-1.6.0
+rootdir: D:\Project\Aegis
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.15.1, platformdirs-4.12.1, cov-7.0.0
+collected 394 items
+
+tests\test_adversarial_verification.py ..............                    [  3%]
+tests\test_agent.py ..                                                   [  4%]
+tests\test_agent_security.py ...........                                 [  6%]
+tests\test_ai_grounding.py ...                                           [  7%]
+tests\test_audit_anchors.py .........                                    [  9%]
+tests\test_audit_and_mfa.py ..                                           [ 10%]
+tests\test_audit_correctness.py ................                         [ 14%]
+tests\test_cerberus.py ............                                      [ 17%]
+tests\test_ci_release_gate.py .......F..F.FF                             [ 21%]
+tests\test_collector.py ...                                              [ 21%]
+tests\test_concurrency_hardening.py ...                                  [ 22%]
+tests\test_detection.py .................                                [ 26%]
+tests\test_detection_lab.py .............                                [ 30%]
+tests\test_durability_and_backpressure.py ....                           [ 31%]
+tests\test_e2e_integration_pipeline.py ....                              [ 32%]
+tests\test_hardening.py .............                                    [ 35%]
+tests\test_integration.py s                                              [ 35%]
+tests\test_integrations.py ...                                           [ 36%]
+tests\test_intelligence.py ..........................                    [ 43%]
+tests\test_master_qa_security_and_functional.py .............            [ 46%]
+tests\test_migrations.py ....                                            [ 47%]
+tests\test_opensearch_hardening.py .                                     [ 47%]
+tests\test_phase32_security_verification.py ..................           [ 52%]
+tests\test_pipeline.py .......                                           [ 54%]
+tests\test_postgres_integration.py sssssssssssssssssssss                 [ 59%]
+tests\test_retention.py ..                                               [ 59%]
+tests\test_security.py ................................................. [ 72%]
+.............................                                            [ 79%]
+tests\test_soar.py .....................                                 [ 85%]
+tests\test_storylines.py .....................                           [ 90%]
+tests\test_syslog.py ....                                                [ 91%]
+tests\test_ueba.py ..............................                        [ 98%]
+tests\test_ueba_live.py ssss                                             [100%]
+
+================================== FAILURES ===================================
+___________________ test_gate_fails_when_no_tests_collected ___________________
+
+mock_env_config = {'path': WindowsPath('D:/Project/Aegis/.pytest_temp/test_gate_fails_when_no_tests_0/.env'), 'secret': 'super-secret-pw-never-leak-999'}
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000021969222B30>
+capsys = <_pytest.capture.CaptureFixture object at 0x000002196756AE00>
+
+    def test_gate_fails_when_no_tests_collected(mock_env_config, monkeypatch, capsys):
+        """Condition: Pytest collects zero tests or fewer than 14 tests."""
+        monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
+
+        mock_process = MagicMock()
+        mock_process.returncode = 0
+        mock_process.stdout = io.StringIO(
+            "=================== 0 passed in 0.10s ===================\n"
+        )
+
+        with patch("subprocess.Popen", return_value=mock_process):
+            with pytest.raises(SystemExit) as exc_info:
+                integration_gate.main()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+>       assert "RELEASE GATE FAILED: Expected at least 14 integration tests, got 0." in captured.err
+E       AssertionError: assert 'RELEASE GATE FAILED: Expected at least 14 integration tests, got 0.' in 'RELEASE GATE FAILED: Expected at least 15 integration tests, got 0.\n'
+E        +  where 'RELEASE GATE FAILED: Expected at least 15 integration tests, got 0.\n' = CaptureResult(out='=== CI Release Gate: Checking External Service Connectivity ===\nWaiting for PostgreSQL (127.0.0.1:...s:     0\nSkipped:    0\nDeselected: 0\n', err='RELEASE GATE FAILED: Expected at least 15 integration tests, got 0.\n').err
+
+tests\test_ci_release_gate.py:169: AssertionError
+_______________ test_gate_succeeds_when_all_healthy_and_14_pass _______________
+
+mock_env_config = {'path': WindowsPath('D:/Project/Aegis/.pytest_temp/test_gate_succeeds_when_all_he0/.env'), 'secret': 'super-secret-pw-never-leak-999'}
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000219698A7D90>
+capsys = <_pytest.capture.CaptureFixture object at 0x00000219663D2D50>
+
+    def test_gate_succeeds_when_all_healthy_and_14_pass(mock_env_config, monkeypatch, capsys):
+        """Condition: All services healthy and all 14 tests pass cleanly (Happy Path)."""
+        monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
+
+        mock_process = MagicMock()
+        mock_process.returncode = 0
+        mock_process.stdout = io.StringIO(ALL_14_PASSED_STDOUT)
+
+        with patch("subprocess.Popen", return_value=mock_process):
+>           integration_gate.main()
+
+tests\test_ci_release_gate.py:238:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    def main() -> None:
+        env_file = ROOT / ".env"
+        if not env_file.exists():
+            print("ERROR: .env file not found. Run 'python scripts/configure.py' first.", file=sys.stderr)
+            sys.exit(1)
+
+        config = dotenv_values(env_file)
+        postgres_pass = config.get("POSTGRES_PASSWORD")
+        redis_pass = config.get("REDIS_PASSWORD")
+        opensearch_pass = config.get("OPENSEARCH_PASSWORD")
+
+        if not postgres_pass or not redis_pass or not opensearch_pass:
+            print("ERROR: Missing required service credentials in .env.", file=sys.stderr)
+            sys.exit(1)
+
+        # 1. Verify loopback connectivity to external services
+        print("=== CI Release Gate: Checking External Service Connectivity ===")
+        services = [
+            ("PostgreSQL", "127.0.0.1", 5432),
+            ("Redis", "127.0.0.1", 6379),
+            ("OpenSearch", "127.0.0.1", 9200),
+        ]
+
+        port_timeout = int(os.environ.get("AEGIS_GATE_PORT_TIMEOUT", "15"))
+        for name, host, port in services:
+            print(f"Waiting for {name} ({host}:{port})...")
+            if not wait_for_port(host, port, timeout_seconds=port_timeout):
+                print(
+                    f"ERROR: Cannot connect to {name} at {host}:{port}.\n"
+                    f"Ensure services are running: docker compose up -d --wait",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(f"  -> {name} is reachable on {host}:{port}.")
+
+        # 2. Build sanitized execution environment for integration test suite
+        test_env = os.environ.copy()
+        test_env.update(
+            {
+                "AEGIS_POSTGRES_TEST_URL": f"postgresql+psycopg://aegis:{postgres_pass}@127.0.0.1:5432/aegis",
+                "DATABASE_URL": f"postgresql+psycopg://aegis:{postgres_pass}@127.0.0.1:5432/aegis",
+                "REDIS_URL": f"redis://:{redis_pass}@127.0.0.1:6379/0",
+                "OPENSEARCH_URL": "http://127.0.0.1:9200",
+                "OPENSEARCH_USERNAME": "aegis",
+                "OPENSEARCH_PASSWORD": opensearch_pass,
+                "AUDIT_SECRET": config.get("AUDIT_SECRET") or "pg-test-audit-integrity-key-32chars-min",
+                "AEGIS_INTEGRATION": "1",
+            }
+        )
+
+        # 3. Execute PostgreSQL concurrency and distributed connectivity test suites
+        print("\n=== CI Release Gate: Executing Mandatory Integration Suites ===")
+        cmd = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/test_postgres_integration.py",
+            "tests/test_integration.py",
+            "-v",
+            "--tb=short",
+            "-rA",
+        ]
+
+        process = subprocess.Popen(  # noqa: S603  # nosec B603
+            cmd,
+            cwd=ROOT,
+            env=test_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        output_lines: list[str] = []
+        assert process.stdout is not None
+        for line in iter(process.stdout.readline, ""):
+            output_lines.append(line)
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+        process.wait()
+        full_output = "".join(output_lines)
+
+        # 4. Enforce strict Zero-Skip policy
+        # Match patterns like: "13 passed in 12.34s" or "12 passed, 1 skipped in ..."
+        summary_match = re.search(r"=+\s*(.+?)\s*in\s+[\d\.]+", full_output)
+        if not summary_match:
+            print(
+                "RELEASE GATE FAILED: Pytest summary line could not be parsed or test output is malformed.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        summary_str = summary_match.group(1)
+
+        passed_match = re.search(r"(\d+)\s+passed", summary_str)
+        skipped_match = re.search(r"(\d+)\s+skipped", summary_str)
+        failed_match = re.search(r"(\d+)\s+failed", summary_str)
+        error_match = re.search(r"(\d+)\s+error", summary_str)
+
+        passed_count = int(passed_match.group(1)) if passed_match else 0
+        skipped_count = int(skipped_match.group(1)) if skipped_match else 0
+        failed_count = int(failed_match.group(1)) if failed_match else 0
+        error_count = int(error_match.group(1)) if error_match else 0
+
+        deselected_match = re.search(r"(\d+)\s+deselected", summary_str)
+        deselected_count = int(deselected_match.group(1)) if deselected_match else 0
+
+        print("\n=== CI Release Gate Verification Summary ===")
+        print(f"Passed:     {passed_count}")
+        print(f"Failed:     {failed_count}")
+        print(f"Errors:     {error_count}")
+        print(f"Skipped:    {skipped_count}")
+        print(f"Deselected: {deselected_count}")
+
+        if process.returncode != 0 or failed_count > 0 or error_count > 0:
+            print("RELEASE GATE FAILED: Integration tests encountered failures or errors.", file=sys.stderr)
+            sys.exit(1)
+
+        if skipped_count > 0:
+            print(
+                f"RELEASE GATE FAILED: {skipped_count} test(s) were skipped.\n"
+                f"Mandatory integration tests must never be skipped in CI release gate!",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        if deselected_count > 0:
+            print(
+                f"RELEASE GATE FAILED: {deselected_count} test(s) were deselected.\n"
+                f"Deselection of mandatory integration tests is strictly prohibited!",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        if passed_count < len(MANDATORY_INTEGRATION_TESTS):
+            print(
+                f"RELEASE GATE FAILED: Expected at least {len(MANDATORY_INTEGRATION_TESTS)} integration tests, got {passed_count}.",
+                file=sys.stderr,
+            )
+>           sys.exit(1)
+E           SystemExit: 1
+
+scripts\integration_gate.py:192: SystemExit
+---------------------------- Captured stdout call -----------------------------
+=== CI Release Gate: Checking External Service Connectivity ===
+Waiting for PostgreSQL (127.0.0.1:5432)...
+  -> PostgreSQL is reachable on 127.0.0.1:5432.
+Waiting for Redis (127.0.0.1:6379)...
+  -> Redis is reachable on 127.0.0.1:6379.
+Waiting for OpenSearch (127.0.0.1:9200)...
+  -> OpenSearch is reachable on 127.0.0.1:9200.
+
+=== CI Release Gate: Executing Mandatory Integration Suites ===
+tests/test_postgres_integration.py::test_postgres_concurrent_rate_limiting PASSED
+tests/test_postgres_integration.py::test_postgres_multiprocess_concurrent_audit_writes PASSED
+tests/test_postgres_integration.py::test_postgres_concurrent_audit_writes_and_chain_integrity PASSED
+tests/test_postgres_integration.py::test_postgres_concurrent_detection_window_appends PASSED
+tests/test_postgres_integration.py::test_postgres_transaction_rollback_and_retry_behavior PASSED
+tests/test_postgres_integration.py::test_postgres_worker_restart_and_duplicate_event_handling PASSED
+tests/test_postgres_integration.py::test_postgres_simultaneous_duplicate_event_ingestion_race PASSED
+tests/test_postgres_integration.py::test_postgres_multi_tenant_concurrent_audit_isolation PASSED
+tests/test_postgres_integration.py::test_postgres_concurrent_entity_and_relationship_upserts PASSED
+tests/test_postgres_integration.py::test_postgres_lock_timeout_and_abort_recovery PASSED
+tests/test_postgres_integration.py::test_postgres_schema_migration_previous_to_current PASSED
+tests/test_postgres_integration.py::test_postgres_concurrent_rule_activation_and_replay PASSED
+tests/test_postgres_integration.py::test_postgres_concurrent_storyline_correlation PASSED
+tests/test_integration.py::test_real_dependency_connectivity PASSED
+=================== 14 passed in 15.20s ===================
+
+=== CI Release Gate Verification Summary ===
+Passed:     14
+Failed:     0
+Errors:     0
+Skipped:    0
+Deselected: 0
+---------------------------- Captured stderr call -----------------------------
+RELEASE GATE FAILED: Expected at least 15 integration tests, got 14.
+___________ test_gate_fails_when_mandatory_test_renamed_or_missing ____________
+
+mock_env_config = {'path': WindowsPath('D:/Project/Aegis/.pytest_temp/test_gate_fails_when_mandatory2/.env'), 'secret': 'super-secret-pw-never-leak-999'}
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000219698A6270>
+capsys = <_pytest.capture.CaptureFixture object at 0x00000219690335B0>
+
+    def test_gate_fails_when_mandatory_test_renamed_or_missing(mock_env_config, monkeypatch, capsys):
+        """Condition: 14 tests pass but a required mandatory test was renamed/omitted and replaced with dummy."""
+        monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
+
+        # 14 tests pass, but test_real_dependency_connectivity is missing, replaced by test_dummy_extra
+        tampered_stdout = (
+            "tests/test_postgres_integration.py::test_postgres_concurrent_rate_limiting PASSED\n"
+            "tests/test_postgres_integration.py::test_postgres_multiprocess_concurrent_audit_writes PASSED\n"
+            "tests/test_postgres_integration.py::test_postgres_concurrent_audit_writes_and_chain_integrity PASSED\n"
+            "tests/test_postgres_integration.py::test_postgres_concurrent_detection_window_appends PASSED\n"
+            "tests/test_postgres_integration.py::test_postgres_transaction_rollback_and_retry_behavior PASSED\n"
+            "tests/test_postgres_integration.py::test_postgres_worker_restart_and_duplicate_event_handling PASSED\n"
+            "tests/test_postgres_integration.py::test_postgres_simultaneous_duplicate_event_ingestion_race PASSED\n"
+            "tests/test_postgres_integration.py::test_postgres_multi_tenant_concurrent_audit_isolation PASSED\n"
+            "tests/test_postgres_integration.py::test_postgres_concurrent_entity_and_relationship_upserts PASSED\n"
+            "tests/test_postgres_integration.py::test_postgres_lock_timeout_and_abort_recovery PASSED\n"
+            "tests/test_postgres_integration.py::test_postgres_schema_migration_previous_to_current PASSED\n"
+            "tests/test_postgres_integration.py::test_postgres_concurrent_rule_activation_and_replay PASSED\n"
+            "tests/test_postgres_integration.py::test_postgres_concurrent_storyline_correlation PASSED\n"
+            "tests/test_integration.py::test_dummy_extra PASSED\n"
+            "=================== 14 passed in 15.20s ===================\n"
+        )
+
+        mock_process = MagicMock()
+        mock_process.returncode = 0
+        mock_process.stdout = io.StringIO(tampered_stdout)
+
+        with patch("subprocess.Popen", return_value=mock_process):
+            with pytest.raises(SystemExit) as exc_info:
+                integration_gate.main()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+>       assert "The following mandatory integration test(s) did not execute and pass:" in captured.err
+E       AssertionError: assert 'The following mandatory integration test(s) did not execute and pass:' in 'RELEASE GATE FAILED: Expected at least 15 integration tests, got 14.\n'
+E        +  where 'RELEASE GATE FAILED: Expected at least 15 integration tests, got 14.\n' = CaptureResult(out='=== CI Release Gate: Checking External Service Connectivity ===\nWaiting for PostgreSQL (127.0.0.1:...:     0\nSkipped:    0\nDeselected: 0\n', err='RELEASE GATE FAILED: Expected at least 15 integration tests, got 14.\n').err
+
+tests\test_ci_release_gate.py:301: AssertionError
+_______________ test_gate_never_leaks_secrets_in_console_output _______________
+
+mock_env_config = {'path': WindowsPath('D:/Project/Aegis/.pytest_temp/test_gate_never_leaks_secrets_0/.env'), 'secret': 'super-secret-pw-never-leak-999'}
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000219698CA510>
+capsys = <_pytest.capture.CaptureFixture object at 0x0000021969193D90>
+
+    def test_gate_never_leaks_secrets_in_console_output(mock_env_config, monkeypatch, capsys):
+        """Condition: Zero secret leakage across all console streams."""
+        secret = mock_env_config["secret"]
+        monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
+
+        mock_process = MagicMock()
+        mock_process.returncode = 0
+        mock_process.stdout = io.StringIO(ALL_14_PASSED_STDOUT)
+
+        with patch("subprocess.Popen", return_value=mock_process):
+>           integration_gate.main()
+
+tests\test_ci_release_gate.py:315:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    def main() -> None:
+        env_file = ROOT / ".env"
+        if not env_file.exists():
+            print("ERROR: .env file not found. Run 'python scripts/configure.py' first.", file=sys.stderr)
+            sys.exit(1)
+
+        config = dotenv_values(env_file)
+        postgres_pass = config.get("POSTGRES_PASSWORD")
+        redis_pass = config.get("REDIS_PASSWORD")
+        opensearch_pass = config.get("OPENSEARCH_PASSWORD")
+
+        if not postgres_pass or not redis_pass or not opensearch_pass:
+            print("ERROR: Missing required service credentials in .env.", file=sys.stderr)
+            sys.exit(1)
+
+        # 1. Verify loopback connectivity to external services
+        print("=== CI Release Gate: Checking External Service Connectivity ===")
+        services = [
+            ("PostgreSQL", "127.0.0.1", 5432),
+            ("Redis", "127.0.0.1", 6379),
+            ("OpenSearch", "127.0.0.1", 9200),
+        ]
+
+        port_timeout = int(os.environ.get("AEGIS_GATE_PORT_TIMEOUT", "15"))
+        for name, host, port in services:
+            print(f"Waiting for {name} ({host}:{port})...")
+            if not wait_for_port(host, port, timeout_seconds=port_timeout):
+                print(
+                    f"ERROR: Cannot connect to {name} at {host}:{port}.\n"
+                    f"Ensure services are running: docker compose up -d --wait",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            print(f"  -> {name} is reachable on {host}:{port}.")
+
+        # 2. Build sanitized execution environment for integration test suite
+        test_env = os.environ.copy()
+        test_env.update(
+            {
+                "AEGIS_POSTGRES_TEST_URL": f"postgresql+psycopg://aegis:{postgres_pass}@127.0.0.1:5432/aegis",
+                "DATABASE_URL": f"postgresql+psycopg://aegis:{postgres_pass}@127.0.0.1:5432/aegis",
+                "REDIS_URL": f"redis://:{redis_pass}@127.0.0.1:6379/0",
+                "OPENSEARCH_URL": "http://127.0.0.1:9200",
+                "OPENSEARCH_USERNAME": "aegis",
+                "OPENSEARCH_PASSWORD": opensearch_pass,
+                "AUDIT_SECRET": config.get("AUDIT_SECRET") or "pg-test-audit-integrity-key-32chars-min",
+                "AEGIS_INTEGRATION": "1",
+            }
+        )
+
+        # 3. Execute PostgreSQL concurrency and distributed connectivity test suites
+        print("\n=== CI Release Gate: Executing Mandatory Integration Suites ===")
+        cmd = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/test_postgres_integration.py",
+            "tests/test_integration.py",
+            "-v",
+            "--tb=short",
+            "-rA",
+        ]
+
+        process = subprocess.Popen(  # noqa: S603  # nosec B603
+            cmd,
+            cwd=ROOT,
+            env=test_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        output_lines: list[str] = []
+        assert process.stdout is not None
+        for line in iter(process.stdout.readline, ""):
+            output_lines.append(line)
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+        process.wait()
+        full_output = "".join(output_lines)
+
+        # 4. Enforce strict Zero-Skip policy
+        # Match patterns like: "13 passed in 12.34s" or "12 passed, 1 skipped in ..."
+        summary_match = re.search(r"=+\s*(.+?)\s*in\s+[\d\.]+", full_output)
+        if not summary_match:
+            print(
+                "RELEASE GATE FAILED: Pytest summary line could not be parsed or test output is malformed.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        summary_str = summary_match.group(1)
+
+        passed_match = re.search(r"(\d+)\s+passed", summary_str)
+        skipped_match = re.search(r"(\d+)\s+skipped", summary_str)
+        failed_match = re.search(r"(\d+)\s+failed", summary_str)
+        error_match = re.search(r"(\d+)\s+error", summary_str)
+
+        passed_count = int(passed_match.group(1)) if passed_match else 0
+        skipped_count = int(skipped_match.group(1)) if skipped_match else 0
+        failed_count = int(failed_match.group(1)) if failed_match else 0
+        error_count = int(error_match.group(1)) if error_match else 0
+
+        deselected_match = re.search(r"(\d+)\s+deselected", summary_str)
+        deselected_count = int(deselected_match.group(1)) if deselected_match else 0
+
+        print("\n=== CI Release Gate Verification Summary ===")
+        print(f"Passed:     {passed_count}")
+        print(f"Failed:     {failed_count}")
+        print(f"Errors:     {error_count}")
+        print(f"Skipped:    {skipped_count}")
+        print(f"Deselected: {deselected_count}")
+
+        if process.returncode != 0 or failed_count > 0 or error_count > 0:
+            print("RELEASE GATE FAILED: Integration tests encountered failures or errors.", file=sys.stderr)
+            sys.exit(1)
+
+        if skipped_count > 0:
+            print(
+                f"RELEASE GATE FAILED: {skipped_count} test(s) were skipped.\n"
+                f"Mandatory integration tests must never be skipped in CI release gate!",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        if deselected_count > 0:
+            print(
+                f"RELEASE GATE FAILED: {deselected_count} test(s) were deselected.\n"
+                f"Deselection of mandatory integration tests is strictly prohibited!",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        if passed_count < len(MANDATORY_INTEGRATION_TESTS):
+            print(
+                f"RELEASE GATE FAILED: Expected at least {len(MANDATORY_INTEGRATION_TESTS)} integration tests, got {passed_count}.",
+                file=sys.stderr,
+            )
+>           sys.exit(1)
+E           SystemExit: 1
+
+scripts\integration_gate.py:192: SystemExit
+---------------------------- Captured stdout call -----------------------------
+=== CI Release Gate: Checking External Service Connectivity ===
+Waiting for PostgreSQL (127.0.0.1:5432)...
+  -> PostgreSQL is reachable on 127.0.0.1:5432.
+Waiting for Redis (127.0.0.1:6379)...
+  -> Redis is reachable on 127.0.0.1:6379.
+Waiting for OpenSearch (127.0.0.1:9200)...
+  -> OpenSearch is reachable on 127.0.0.1:9200.
+
+=== CI Release Gate: Executing Mandatory Integration Suites ===
+tests/test_postgres_integration.py::test_postgres_concurrent_rate_limiting PASSED
+tests/test_postgres_integration.py::test_postgres_multiprocess_concurrent_audit_writes PASSED
+tests/test_postgres_integration.py::test_postgres_concurrent_audit_writes_and_chain_integrity PASSED
+tests/test_postgres_integration.py::test_postgres_concurrent_detection_window_appends PASSED
+tests/test_postgres_integration.py::test_postgres_transaction_rollback_and_retry_behavior PASSED
+tests/test_postgres_integration.py::test_postgres_worker_restart_and_duplicate_event_handling PASSED
+tests/test_postgres_integration.py::test_postgres_simultaneous_duplicate_event_ingestion_race PASSED
+tests/test_postgres_integration.py::test_postgres_multi_tenant_concurrent_audit_isolation PASSED
+tests/test_postgres_integration.py::test_postgres_concurrent_entity_and_relationship_upserts PASSED
+tests/test_postgres_integration.py::test_postgres_lock_timeout_and_abort_recovery PASSED
+tests/test_postgres_integration.py::test_postgres_schema_migration_previous_to_current PASSED
+tests/test_postgres_integration.py::test_postgres_concurrent_rule_activation_and_replay PASSED
+tests/test_postgres_integration.py::test_postgres_concurrent_storyline_correlation PASSED
+tests/test_integration.py::test_real_dependency_connectivity PASSED
+=================== 14 passed in 15.20s ===================
+
+=== CI Release Gate Verification Summary ===
+Passed:     14
+Failed:     0
+Errors:     0
+Skipped:    0
+Deselected: 0
+---------------------------- Captured stderr call -----------------------------
+RELEASE GATE FAILED: Expected at least 15 integration tests, got 14.
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\Project\Aegis\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+.venv\Lib\site-packages\typer\__init__.py:24
+  D:\Project\Aegis\.venv\Lib\site-packages\typer\__init__.py:24: DeprecationWarning: 'click.utils.get_binary_stream' is deprecated and will be removed in Click 9.0.
+    from click.utils import get_binary_stream as get_binary_stream
+
+.venv\Lib\site-packages\typer\__init__.py:25
+  D:\Project\Aegis\.venv\Lib\site-packages\typer\__init__.py:25: DeprecationWarning: 'click.utils.get_text_stream' is deprecated and will be removed in Click 9.0.
+    from click.utils import get_text_stream as get_text_stream
+
+tests/test_detection_lab.py::test_rule_validation_accepts_valid_and_rejects_invalid_constructs
+  D:\Project\Aegis\aegis\schemas.py:169: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x0000021969666C50>
+    @model_validator(mode="after")
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: D:\Project\Aegis\docs\validation\cerberus\final-backend.xml -
+=============================== tests coverage ================================
+_______________ coverage: platform win32, python 3.14.3-final-0 _______________
+
+Name                           Stmts   Miss  Cover
+--------------------------------------------------
+aegis\__init__.py                  1      0   100%
+aegis\agent.py                   238     79    67%
+aegis\ai.py                      125     30    76%
+aegis\api.py                    1086    238    78%
+aegis\audit_anchor.py            280     56    80%
+aegis\cli.py                     516    268    48%
+aegis\collector.py               100     15    85%
+aegis\config.py                   90      9    90%
+aegis\crypto.py                  113     12    89%
+aegis\db.py                      430      0   100%
+aegis\detection.py               101      5    95%
+aegis\integrations.py            205     32    84%
+aegis\intel_api.py                98     11    89%
+aegis\intel_providers.py          57      3    95%
+aegis\intelligence.py            159     13    92%
+aegis\investigation.py            56     10    82%
+aegis\notification_worker.py      33     33     0%
+aegis\observability.py            19      9    53%
+aegis\observables.py              79      9    89%
+aegis\parsers.py                 133     12    91%
+aegis\pipeline.py                242     36    85%
+aegis\replay.py                  297     22    93%
+aegis\response.py                 81     16    80%
+aegis\retention.py               149     44    70%
+aegis\rule_checks.py              30      0   100%
+aegis\rules.py                     8      0   100%
+aegis\schemas.py                 354     48    86%
+aegis\security.py                208     18    91%
+aegis\sigma.py                   163     44    73%
+aegis\simulation.py               29      6    79%
+aegis\soar.py                    283     32    89%
+aegis\soar_api.py                109     10    91%
+aegis\storage.py                 134     54    60%
+aegis\storylines.py              123      3    98%
+aegis\syslog.py                  193     51    74%
+aegis\ueba.py                    150      2    99%
+aegis\ueba_api.py                155     22    86%
+aegis\worker.py                  104     23    78%
+--------------------------------------------------
+TOTAL                           6731   1275    81%
+=========================== short test summary info ===========================
+FAILED tests/test_ci_release_gate.py::test_gate_fails_when_no_tests_collected
+FAILED tests/test_ci_release_gate.py::test_gate_succeeds_when_all_healthy_and_14_pass
+FAILED tests/test_ci_release_gate.py::test_gate_fails_when_mandatory_test_renamed_or_missing
+FAILED tests/test_ci_release_gate.py::test_gate_never_leaks_secrets_in_console_output
+====== 4 failed, 364 passed, 26 skipped, 4 warnings in 210.70s (0:03:30) ======

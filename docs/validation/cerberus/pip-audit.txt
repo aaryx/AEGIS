@@ -1,0 +1,11 @@
+.venv/Scripts/python : WARNING: Ignoring invalid distribution ~ytest (D:\Project\Aegis\.venv\Lib\site-packages)
+At line:2 char:1
++ .venv/Scripts/python -m pip_audit --skip-editable *> docs/validation/ ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (WARNING: Ignori...\site-packages):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+No known vulnerabilities found
+Name       Skip Reason
+---------- -------------------------------
+aegis-siem distribution marked as editable

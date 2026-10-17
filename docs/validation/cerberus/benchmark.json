@@ -1,0 +1,133 @@
+{
+  "python": "3.14.3",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "method": "SQLite WAL; 34 seeded rules; one worker; tracemalloc enabled; 1 warm-up; 3 repetitions",
+  "results": [
+    {
+      "events": 100,
+      "batch_size": 50,
+      "processed": 100,
+      "ingestion_seconds": 0.6808063999997103,
+      "ingestion_eps": 146.88463563215998,
+      "batch_p50_seconds": 0.34039914999812027,
+      "batch_p95_seconds": 0.3465907999998308,
+      "worker_seconds": 2.557742600001802,
+      "worker_eps": 39.09697559087046,
+      "ueba_seconds": 0.14278190000186441,
+      "ueba_result": {
+        "events": 100,
+        "unique_observations": 100,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 1497,
+      "cpu_seconds": 3.15625,
+      "python_peak_bytes": 2163712
+    },
+    {
+      "events": 100,
+      "batch_size": 50,
+      "processed": 100,
+      "ingestion_seconds": 1.0244668000013917,
+      "ingestion_eps": 97.61175276725821,
+      "batch_p50_seconds": 0.5122276000038255,
+      "batch_p95_seconds": 0.5991176000025007,
+      "worker_seconds": 2.5580073000019183,
+      "worker_eps": 39.092929875503096,
+      "ueba_seconds": 0.09789879999880213,
+      "ueba_result": {
+        "events": 100,
+        "unique_observations": 100,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 1497,
+      "cpu_seconds": 3.234375,
+      "python_peak_bytes": 2305028
+    },
+    {
+      "events": 100,
+      "batch_size": 50,
+      "processed": 100,
+      "ingestion_seconds": 0.8339572000040789,
+      "ingestion_eps": 119.91023040452303,
+      "batch_p50_seconds": 0.4169742000049155,
+      "batch_p95_seconds": 0.4667793000044185,
+      "worker_seconds": 3.4629341999971075,
+      "worker_eps": 28.877245198619,
+      "ueba_seconds": 0.11423849999846425,
+      "ueba_result": {
+        "events": 100,
+        "unique_observations": 100,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 1497,
+      "cpu_seconds": 3.578125,
+      "python_peak_bytes": 2304591
+    },
+    {
+      "events": 500,
+      "batch_size": 50,
+      "processed": 500,
+      "ingestion_seconds": 3.2600908000022173,
+      "ingestion_eps": 153.36996135189239,
+      "batch_p50_seconds": 0.29882495000128984,
+      "batch_p95_seconds": 0.5454687999954331,
+      "worker_seconds": 8.779449799993017,
+      "worker_eps": 56.9511770544434,
+      "ueba_seconds": 0.28645040000265,
+      "ueba_result": {
+        "events": 500,
+        "unique_observations": 500,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 6321,
+      "cpu_seconds": 11.03125,
+      "python_peak_bytes": 5671388
+    },
+    {
+      "events": 500,
+      "batch_size": 50,
+      "processed": 500,
+      "ingestion_seconds": 4.336220199998934,
+      "ingestion_eps": 115.30779733006247,
+      "batch_p50_seconds": 0.43208804999812855,
+      "batch_p95_seconds": 0.734463600005256,
+      "worker_seconds": 9.39628829999856,
+      "worker_eps": 53.21250094040608,
+      "ueba_seconds": 0.15277520000381628,
+      "ueba_result": {
+        "events": 500,
+        "unique_observations": 500,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 6321,
+      "cpu_seconds": 11.90625,
+      "python_peak_bytes": 5428580
+    },
+    {
+      "events": 500,
+      "batch_size": 50,
+      "processed": 500,
+      "ingestion_seconds": 2.681468599999789,
+      "ingestion_eps": 186.46498415086393,
+      "batch_p50_seconds": 0.2675345499992545,
+      "batch_p95_seconds": 0.37484240000048885,
+      "worker_seconds": 10.79841049999959,
+      "worker_eps": 46.303110999532656,
+      "ueba_seconds": 0.2828455999988364,
+      "ueba_result": {
+        "events": 500,
+        "unique_observations": 500,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 6321,
+      "cpu_seconds": 11.5,
+      "python_peak_bytes": 4446846
+    }
+  ]
+}

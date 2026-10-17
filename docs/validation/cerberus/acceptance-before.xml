@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="4" skipped="0" tests="4" time="0.278" timestamp="2026-10-17T19:15:57.412760+05:30" hostname="LAPTOP-KF98AASU"><testcase classname="tests.test_acceptance_recovery" name="test_acceptance_waits_for_complete_investigation[events]" time="0.002"><failure message="assert 0 == 1&#10; +  where 0 = len([])">monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002806EC568B0&gt;
+missing = 'events'
+
+    @pytest.mark.parametrize("missing", ["events", "iocs", "entities"])
+    def test_acceptance_waits_for_complete_investigation(monkeypatch, missing):
+        polls = []
+        monkeypatch.setattr("scripts.acceptance.time.sleep", polls.append)
+    
+        def respond(request):
+            if request.url.path == "/incidents":
+                return httpx.Response(200, json={"items": [{"id": "INC-test"}]})
+            data = {"evidence": [{"event": {"host": "test-host"}}] * 16, "iocs": [{}], "entities": [{}]}
+            if not polls:
+                if missing == "events":
+                    data["evidence"] = data["evidence"][:1]
+                else:
+                    data[missing] = []
+            return httpx.Response(200, json=data)
+    
+        with httpx.Client(base_url="http://test", transport=httpx.MockTransport(respond)) as client:
+            _, evidence = wait_for_investigation(client, "test-host", attempts=2)
+&gt;       assert len(polls) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests\test_acceptance_recovery.py:27: AssertionError</failure></testcase><testcase classname="tests.test_acceptance_recovery" name="test_acceptance_waits_for_complete_investigation[iocs]" time="0.001"><failure message="assert 0 == 1&#10; +  where 0 = len([])">monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002806EC56EA0&gt;
+missing = 'iocs'
+
+    @pytest.mark.parametrize("missing", ["events", "iocs", "entities"])
+    def test_acceptance_waits_for_complete_investigation(monkeypatch, missing):
+        polls = []
+        monkeypatch.setattr("scripts.acceptance.time.sleep", polls.append)
+    
+        def respond(request):
+            if request.url.path == "/incidents":
+                return httpx.Response(200, json={"items": [{"id": "INC-test"}]})
+            data = {"evidence": [{"event": {"host": "test-host"}}] * 16, "iocs": [{}], "entities": [{}]}
+            if not polls:
+                if missing == "events":
+                    data["evidence"] = data["evidence"][:1]
+                else:
+                    data[missing] = []
+            return httpx.Response(200, json=data)
+    
+        with httpx.Client(base_url="http://test", transport=httpx.MockTransport(respond)) as client:
+            _, evidence = wait_for_investigation(client, "test-host", attempts=2)
+&gt;       assert len(polls) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests\test_acceptance_recovery.py:27: AssertionError</failure></testcase><testcase classname="tests.test_acceptance_recovery" name="test_acceptance_waits_for_complete_investigation[entities]" time="0.001"><failure message="assert 0 == 1&#10; +  where 0 = len([])">monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002806DA83D10&gt;
+missing = 'entities'
+
+    @pytest.mark.parametrize("missing", ["events", "iocs", "entities"])
+    def test_acceptance_waits_for_complete_investigation(monkeypatch, missing):
+        polls = []
+        monkeypatch.setattr("scripts.acceptance.time.sleep", polls.append)
+    
+        def respond(request):
+            if request.url.path == "/incidents":
+                return httpx.Response(200, json={"items": [{"id": "INC-test"}]})
+            data = {"evidence": [{"event": {"host": "test-host"}}] * 16, "iocs": [{}], "entities": [{}]}
+            if not polls:
+                if missing == "events":
+                    data["evidence"] = data["evidence"][:1]
+                else:
+                    data[missing] = []
+            return httpx.Response(200, json=data)
+    
+        with httpx.Client(base_url="http://test", transport=httpx.MockTransport(respond)) as client:
+            _, evidence = wait_for_investigation(client, "test-host", attempts=2)
+&gt;       assert len(polls) == 1
+E       assert 0 == 1
+E        +  where 0 = len([])
+
+tests\test_acceptance_recovery.py:27: AssertionError</failure></testcase><testcase classname="tests.test_acceptance_recovery" name="test_acceptance_permanent_incomplete_evidence_fails" time="0.001"><failure message="Failed: DID NOT RAISE &lt;class 'RuntimeError'&gt;">monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x000002806DA5BF00&gt;
+
+    def test_acceptance_permanent_incomplete_evidence_fails(monkeypatch):
+        monkeypatch.setattr("scripts.acceptance.time.sleep", lambda _: None)
+    
+        def respond(request):
+            data = {"items": [{"id": "INC-test"}]} if request.url.path == "/incidents" else {
+                "evidence": [{"event": {"host": "test-host"}}], "iocs": [], "entities": [],
+            }
+            return httpx.Response(200, json=data)
+    
+        with httpx.Client(base_url="http://test", transport=httpx.MockTransport(respond)) as client:
+&gt;           with pytest.raises(RuntimeError, match="incomplete"):
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           Failed: DID NOT RAISE &lt;class 'RuntimeError'&gt;
+
+tests\test_acceptance_recovery.py:41: Failed</failure></testcase></testsuite></testsuites>

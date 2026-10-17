@@ -216,8 +216,16 @@ def verify_audit(db, settings, organization_id: str) -> bool:
             .order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
         )
     )
+    # Even an empty chain must agree with its durable heads. Otherwise deleting
+    # every audit row makes a previously nonempty history appear valid.
+    head = db.get(AuditHead, organization_id)
+    org = db.get(Organization, organization_id)
+    if not org:
+        return False
+    if head and (head.sequence_number != len(records) or head.audit_head != org.audit_head):
+        return False
     if not records:
-        return True
+        return org.audit_head == "0" * 64
     by_previous = {record.previous_hash: record for record in records}
     previous = "0" * 64
     visited = 0
@@ -250,8 +258,6 @@ def verify_audit(db, settings, organization_id: str) -> bool:
         previous = record.entry_hash
         visited += 1
 
-    head = db.get(AuditHead, organization_id)
-    org = db.get(Organization, organization_id)
     expected_head = head.audit_head if head else (org.audit_head if org else "")
     return visited == len(records) and previous == expected_head
 

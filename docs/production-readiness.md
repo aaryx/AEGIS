@@ -1,5 +1,9 @@
 # AEGIS Production-Readiness Assessment & Verification Report
 
+> Historical assessment, not a current production certification. See
+> [Project Cerberus](adversarial-validation-report.md) for subsequent adversarial
+> findings, measured results, and explicit verification gaps.
+
 **Environment**: Local Windows development host (`Python 3.14.3`, `Node v24 / npm 11.11.0`, Playwright 1.58.2) & GitHub Actions Runner (`ubuntu-latest`, Python 3.12, Node 24, Docker Compose)  
 **Base Commit**: `d3b7b58` (`ci: configure GITHUB_TOKEN for gitleaks pull request scanning`)  
 **Working Branch**: `feature/detection-replay-lab`  
@@ -119,6 +123,6 @@ Every capability is evaluated against explicit evidence tiers:
 1. **External Threat Intelligence Quotas**:
    - Real VirusTotal lookups are subject to public API rate limits (4 requests/minute). The platform provides default caching and rate-limiting queues, but high-volume environments should deploy private TI feeds.
 2. **UEBA Telemetry Volume Limits**:
-   - `UEBA_EVENT_LIMIT` defaults to 10,000 events per observation window. Very large enterprise tenants with >50,000 daily events per entity will require streaming baseline aggregations.
+   - `UEBA_EVENT_LIMIT` defaults to **10,000 records per tenant across the baseline plus observation window** (15 days with the default 14-day baseline). Settings permit 100–50,000; Compose also defaults to 10,000. The query counts records before feature filtering/deduplication and reads limit + 1 to detect overflow. Overflow fails the entire assessment without partial profiles/findings. This is not a per-entity or daily allowance. Larger windows require explicitly sized resources or a future streaming implementation. Verified against `Settings`, `ueba.config`, `ueba.analyze`, Compose, and the Cerberus configuration regression.
 3. **OpenSearch Index Retention**:
    - Raw event retention in OpenSearch should be paired with external snapshot policies to ensure compliance with NIST SP 800-92 storage guidelines.

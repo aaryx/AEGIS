@@ -53,9 +53,7 @@ def project_once(settings, sessions, storage) -> int:
                 storage.index(org, [records[job.event_id].payload for job in group])
             except Exception as exc:
                 logger.error(
-                    "search_projection_failed: %s",
-                    exc,
-                    exc_info=True,
+                    "search_projection_failed",
                     extra={"error_type": type(exc).__name__, "event_count": len(group)},
                 )
                 for job in group:
@@ -107,9 +105,7 @@ def process_once(settings, sessions, storage, redis=None, worker_id="local") -> 
                             record.available_at = time.time() + min(300, 2**record.attempts)
                             record.last_error = type(exc).__name__
                             logger.error(
-                                "event_processing_failed: %s",
-                                exc,
-                                exc_info=True,
+                                "event_processing_failed",
                                 extra={"error_type": type(exc).__name__, "event_count": 1},
                             )
         heartbeat(db, worker_id, processed)

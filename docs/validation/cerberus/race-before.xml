@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="2" time="1.830" timestamp="2026-10-17T17:56:49.494168+05:30" hostname="LAPTOP-KF98AASU"><testcase classname="tests.test_cerberus" name="test_simultaneous_source_sequence_reuse[False]" time="0.688" /><testcase classname="tests.test_cerberus" name="test_simultaneous_source_sequence_reuse[True]" time="0.785"><failure message="AssertionError: assert 0 == 1&#10; +  where 0 = &lt;built-in method count of list object at 0x0000025D004D3D00&gt;('rejected')&#10; +    where &lt;built-in method count of list object at 0x0000025D004D3D00&gt; = [{'accepted': ['9ee03704-fabf-57ff-a676-26ca406d3816'], 'delivery': 'at-least-once', 'duplicates': []}, {'accepted': [], 'delivery': 'at-least-once', 'duplicates': ['9ee03704-fabf-57ff-a676-26ca406d3816']}].count">system = {'app': &lt;fastapi.applications.FastAPI object at 0x0000025D01CBBCB0&gt;, 'client': &lt;starlette.testclient.TestClient object...0000025D01BA9950&gt;, 'org': '6a5c1b60-99c9-4ee8-b596-104642179b9c', 'other': '3ea4735b-2640-4fb7-ac54-e2f07cdde271', ...}
+conflicting = True
+
+    @pytest.mark.parametrize("conflicting", [False, True])
+    def test_simultaneous_source_sequence_reuse(system, conflicting):
+        """Both requests see no existing event before competing for the unique ID."""
+        sessions, settings, org = system["app"].state.sessions, system["settings"], system["org"]
+        engine = system["app"].state.engine
+        barrier = Barrier(2)
+
+        def synchronize(connection, cursor, statement, parameters, context, executemany):
+            if statement.startswith("SELECT events_metadata.id,") and " IN (" in statement:
+                barrier.wait(timeout=10)
+
+        def submit(index):
+            incoming = EventInput(
+                source="cerberus", source_sequence="same-sequence",
+                raw_event={"message": str(index) if conflicting else "same"},
+            )
+            try:
+                with sessions.begin() as db:
+                    return ingest(db, settings, org, [incoming], "cerberus")
+            except ValueError as exc:
+                assert str(exc) == "Source sequence was reused with different evidence"
+                return "rejected"
+
+        event.listen(engine, "after_cursor_execute", synchronize)
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(executor.map(submit, range(2)))
+        finally:
+            event.remove(engine, "after_cursor_execute", synchronize)
+        assert sum(isinstance(r, dict) and len(r["accepted"]) == 1 for r in results) == 1
+        if conflicting:
+&gt;           assert results.count("rejected") == 1
+E           AssertionError: assert 0 == 1
+E            +  where 0 = &lt;built-in method count of list object at 0x0000025D004D3D00&gt;('rejected')
+E            +    where &lt;built-in method count of list object at 0x0000025D004D3D00&gt; = [{'accepted': ['9ee03704-fabf-57ff-a676-26ca406d3816'], 'delivery': 'at-least-once', 'duplicates': []}, {'accepted': [], 'delivery': 'at-least-once', 'duplicates': ['9ee03704-fabf-57ff-a676-26ca406d3816']}].count
+
+tests\test_cerberus.py:93: AssertionError</failure></testcase></testsuite></testsuites>
