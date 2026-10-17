@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="0.944" timestamp="2026-10-17T18:00:30.279690+05:30" hostname="LAPTOP-KF98AASU"><testcase classname="tests.test_cerberus" name="test_worker_failure_logs_do_not_disclose_exception_payload" time="0.556"><failure message="assert 'cerberus-se...tion-payload' not in 'ERROR    ae...on-payload\n'&#10;  &#10;  'cerberus-sensitive-exception-payload' is contained here:&#10;    g_failed: cerberus-sensitive-exception-payload&#10;    Traceback (most recent call last):&#10;      File &quot;D:\Project\Aegis\aegis\worker.py&quot;, line 95, in process_once&#10;        detect_batch(db, settings, org_records, redis=redis)&#10;        ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...&#10;  &#10;  ...Full output truncated (13 lines hidden), use '-vv' to show">system = {'app': &lt;fastapi.applications.FastAPI object at 0x00000246F2A0FCB0&gt;, 'client': &lt;starlette.testclient.TestClient object...00000246F2BA96A0&gt;, 'org': '67ec7808-ae86-42c8-b84c-71891025526b', 'other': '647aa395-70bf-449e-bd18-02d6ccc18ddc', ...}
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x00000246F2D61480&gt;
+caplog = &lt;_pytest.logging.LogCaptureFixture object at 0x00000246F2BABE00&gt;
+
+    def test_worker_failure_logs_do_not_disclose_exception_payload(system, monkeypatch, caplog):
+        sessions, settings, org = system["app"].state.sessions, system["settings"], system["org"]
+        with sessions.begin() as db:
+            ingest(db, settings, org, [EventInput(source="cerberus", raw_event="synthetic")], "test")
+    
+        def fail(*args, **kwargs):
+            raise ConnectionError("cerberus-sensitive-exception-payload")
+    
+        monkeypatch.setattr("aegis.worker.detect_batch", fail)
+        process_once(settings, sessions, system["app"].state.storage)
+&gt;       assert "cerberus-sensitive-exception-payload" not in caplog.text
+E       assert 'cerberus-se...tion-payload' not in 'ERROR    ae...on-payload\n'
+E         
+E         'cerberus-sensitive-exception-payload' is contained here:
+E           g_failed: cerberus-sensitive-exception-payload
+E           Traceback (most recent call last):
+E             File "D:\Project\Aegis\aegis\worker.py", line 95, in process_once
+E               detect_batch(db, settings, org_records, redis=redis)
+E               ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^...
+E         
+E         ...Full output truncated (13 lines hidden), use '-vv' to show
+
+tests\test_cerberus.py:174: AssertionError</failure></testcase></testsuite></testsuites>

@@ -1,0 +1,211 @@
+{
+  "tested": 34,
+  "passed": 34,
+  "failed": 0,
+  "items": [
+    {
+      "rule_id": "AEGIS-AUTH-001",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-AUTH-002",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-AUTH-003",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-AUTH-004",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-AUTH-005",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-PRIV-001",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-PRIV-002",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-PRIV-003",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-PROC-001",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-PROC-002",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-PROC-003",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-PERSIST-001",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-PERSIST-002",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-PERSIST-003",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-PERSIST-004",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-NET-001",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-NET-002",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-NET-003",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-NET-004",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-NET-005",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-WEB-001",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-WEB-002",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-WEB-003",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-WEB-004",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-WEB-005",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-DATA-001",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-DATA-002",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-DATA-003",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-DATA-004",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-DATA-005",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-CLOUD-001",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-CLOUD-002",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-CLOUD-003",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    },
+    {
+      "rule_id": "AEGIS-CORR-001",
+      "positive": true,
+      "negative": false,
+      "passed": true
+    }
+  ]
+}

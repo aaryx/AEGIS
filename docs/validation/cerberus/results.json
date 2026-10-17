@@ -1,0 +1,172 @@
+{
+  "baseline_sha": "146bbddb4b10e90c92b3359e963baa81be077408",
+  "final_local_backend": {
+    "passed": 370,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 26,
+    "total": 396,
+    "coverage_percent": 81,
+    "artifact": "release-backend.xml"
+  },
+  "frontend": {
+    "passed": 27,
+    "failed": 0,
+    "skipped": 0
+  },
+  "rules": {
+    "passed": 34,
+    "failed": 0
+  },
+  "browser_local": {
+    "passed": 1,
+    "failed": 0,
+    "skipped": 2
+  },
+  "checks": {
+    "ruff": "passed",
+    "mypy": "passed: 38 source files",
+    "bandit": "passed: no medium/high findings",
+    "pip_audit": "passed: no known vulnerabilities; editable project excluded",
+    "npm_audit": "passed: zero vulnerabilities",
+    "frontend_typecheck": "passed",
+    "frontend_build": "passed",
+    "format": "failed: 42 pre-existing files require formatting"
+  },
+  "locally_blocked": [
+    "Docker Compose startup and service integration",
+    "live database and Redis interruption",
+    "PostgreSQL backup/restore drill",
+    "Trivy container scans",
+    "Gitleaks executable unavailable",
+    "container SBOM generation"
+  ],
+  "initial_sandbox_attempt": {
+    "passed": 88,
+    "skipped": 24,
+    "errors": 268,
+    "cause": "Windows temporary-directory permissions; approved rerun succeeded"
+  },
+  "junit_runs": {
+    "after.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "5",
+      "time": "3.827",
+      "timestamp": "2026-10-17T17:55:56.922961+05:30",
+      "hostname": "LAPTOP-KF98AASU"
+    },
+    "backend.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "24",
+      "tests": "380",
+      "time": "219.262",
+      "timestamp": "2026-10-17T17:54:18.605864+05:30",
+      "hostname": "LAPTOP-KF98AASU"
+    },
+    "before.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "3",
+      "skipped": "0",
+      "tests": "5",
+      "time": "3.388",
+      "timestamp": "2026-10-17T17:54:57.424363+05:30",
+      "hostname": "LAPTOP-KF98AASU"
+    },
+    "cerberus-final.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "12",
+      "time": "8.776",
+      "timestamp": "2026-10-17T18:01:46.513637+05:30",
+      "hostname": "LAPTOP-KF98AASU"
+    },
+    "cerberus.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "7",
+      "time": "4.393",
+      "timestamp": "2026-10-17T17:57:22.104469+05:30",
+      "hostname": "LAPTOP-KF98AASU"
+    },
+    "final-backend.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "2",
+      "skipped": "26",
+      "tests": "394",
+      "time": "215.101",
+      "timestamp": "2026-10-17T18:14:49.945361+05:30",
+      "hostname": "LAPTOP-KF98AASU"
+    },
+    "gate-expansion-before.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "4",
+      "skipped": "26",
+      "tests": "394",
+      "time": "210.692",
+      "timestamp": "2026-10-17T18:06:30.173477+05:30",
+      "hostname": "LAPTOP-KF98AASU"
+    },
+    "gate-final.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "26",
+      "time": "8.216",
+      "timestamp": "2026-10-17T18:15:48.372438+05:30",
+      "hostname": "LAPTOP-KF98AASU"
+    },
+    "log-before.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "1",
+      "skipped": "0",
+      "tests": "1",
+      "time": "0.944",
+      "timestamp": "2026-10-17T18:00:30.279690+05:30",
+      "hostname": "LAPTOP-KF98AASU"
+    },
+    "race-before.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "1",
+      "skipped": "0",
+      "tests": "2",
+      "time": "1.830",
+      "timestamp": "2026-10-17T17:56:49.494168+05:30",
+      "hostname": "LAPTOP-KF98AASU"
+    },
+    "release-backend.xml": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "26",
+      "tests": "396",
+      "time": "209.657",
+      "timestamp": "2026-10-17T18:17:35.909386+05:30",
+      "hostname": "LAPTOP-KF98AASU"
+    }
+  },
+  "source_sha256": {
+    "aegis/security.py": "d7acff53cf550761cc3d8206cd8eefd6d788b4568bd0b34060e709f9ff867fbf",
+    "aegis/pipeline.py": "6f1a957063b8824e77c4d19161198995cb2f0502082b334af2921a363513814b",
+    "aegis/worker.py": "fac0bb214b308d1a64db454f1351505769d5d67abbb2a321fe392866941871e1",
+    "aegis/api.py": "f45b5cb701d1bbda9ace640475bac8a8e4ac74c76baafd5cb749ce37c7efcb8d",
+    "tests/test_cerberus.py": "c8eec430ffe5be7afcf33fa7328ff0ea148b41045bcbdca37abbce5c7d68480a",
+    "scripts/integration_gate.py": "4376e903cb5600721b02e057bdb4eb822f4ebcaa60c98bff0d7f54f40c80daad",
+    "tests/test_ci_release_gate.py": "cabf7a4329e1386c8fb790e74c30c85b4efd676cdb0b14ccd809fab69aa160dc",
+    "tests/test_postgres_integration.py": "b5e0584385731004c32b684cabdc394a04b94696576077762d8d79dcc313c077"
+  }
+}

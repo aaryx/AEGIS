@@ -332,9 +332,7 @@ def create_app(settings: Settings | None = None):
             response = await call_next(request)
         except Exception as exc:
             logger.error(
-                "request_failed: %s",
-                exc,
-                exc_info=True,
+                "request_failed",
                 extra={"request_id": request.state.request_id, "error_type": type(exc).__name__},
             )
             response = JSONResponse(

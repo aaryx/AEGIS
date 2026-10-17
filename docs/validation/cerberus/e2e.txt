@@ -1,0 +1,32 @@
+▲ Next.js 16.4.0
+- Local:         http://localhost:3000
+- Network:       http://0.0.0.0:3000
+✓ Ready in 0ms
+✓ Running next.config took 10ms
+.venv/Scripts/python : INFO:     Started server process [17692]
+At line:2 char:1
++ .venv/Scripts/python scripts/e2e.py *> docs/validation/cerberus/e2e.l ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (INFO:     Started server process [17692]:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+
+Running 3 tests using 1 worker
+
+(node:2324) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node.EXE --trace-warnings ...` to show where the warning was created)
+(node:2324) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node.EXE --trace-warnings ...` to show where the warning was created)
+PAGE CONSOLE: error Failed to load resource: net::ERR_NETWORK_ACCESS_DENIED
+PAGE CONSOLE: error Failed to load resource: the server responded with a status of 401 (Unauthorized)
+PAGE CONSOLE: error Failed to load resource: net::ERR_NETWORK_ACCESS_DENIED
+PAGE CONSOLE: error Failed to load resource: the server responded with a status of 401 (Unauthorized)
+  ok 1 e2e\soc.spec.ts:3:1 › analyst follows real evidence from dashboard through report (15.6s)
+  -  2 e2e\ueba.spec.ts:11:1 › UEBA real worker produces explainable evidence and audited analyst actions
+  -  3 e2e\ueba.spec.ts:49:1 › UEBA reader permissions, foreign tenant emptiness and recoverable API failure
+
+  2 skipped
+  1 passed (19.8s)

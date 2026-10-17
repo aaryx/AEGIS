@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 MANDATORY_INTEGRATION_TESTS = {
+    "test_postgres_cerberus_concurrent_evidence_conflict[False]",
+    "test_postgres_cerberus_concurrent_evidence_conflict[True]",
     "test_postgres_concurrent_storyline_correlation",
     # PostgreSQL Concurrency & Isolation Suite (tests/test_postgres_integration.py)
     "test_postgres_concurrent_rate_limiting",
@@ -191,7 +193,7 @@ def main() -> None:
         sys.exit(1)
 
     # 5. Explicitly verify every single mandatory integration test by name was executed and PASSED
-    passed_test_names = set(re.findall(r"::(\w+)\s+PASSED", full_output))
+    passed_test_names = set(re.findall(r"::(\w+(?:\[[^\]\r\n]+\])?)\s+PASSED", full_output))
     missing_tests = MANDATORY_INTEGRATION_TESTS - passed_test_names
     if missing_tests:
         print(

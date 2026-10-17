@@ -1,0 +1,109 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.3, pytest-9.0.3, pluggy-1.6.0
+rootdir: D:\Project\Aegis
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.15.1, platformdirs-4.12.1, cov-7.0.0
+collected 396 items
+
+tests\test_adversarial_verification.py ..............                    [  3%]
+tests\test_agent.py ..                                                   [  4%]
+tests\test_agent_security.py ...........                                 [  6%]
+tests\test_ai_grounding.py ...                                           [  7%]
+tests\test_audit_anchors.py .........                                    [  9%]
+tests\test_audit_and_mfa.py ..                                           [ 10%]
+tests\test_audit_correctness.py ................                         [ 14%]
+tests\test_cerberus.py ............                                      [ 17%]
+tests\test_ci_release_gate.py ................                           [ 21%]
+tests\test_collector.py ...                                              [ 22%]
+tests\test_concurrency_hardening.py ...                                  [ 22%]
+tests\test_detection.py .................                                [ 27%]
+tests\test_detection_lab.py .............                                [ 30%]
+tests\test_durability_and_backpressure.py ....                           [ 31%]
+tests\test_e2e_integration_pipeline.py ....                              [ 32%]
+tests\test_hardening.py .............                                    [ 35%]
+tests\test_integration.py s                                              [ 36%]
+tests\test_integrations.py ...                                           [ 36%]
+tests\test_intelligence.py ..........................                    [ 43%]
+tests\test_master_qa_security_and_functional.py .............            [ 46%]
+tests\test_migrations.py ....                                            [ 47%]
+tests\test_opensearch_hardening.py .                                     [ 47%]
+tests\test_phase32_security_verification.py ..................           [ 52%]
+tests\test_pipeline.py .......                                           [ 54%]
+tests\test_postgres_integration.py sssssssssssssssssssss                 [ 59%]
+tests\test_retention.py ..                                               [ 60%]
+tests\test_security.py ................................................. [ 72%]
+.............................                                            [ 79%]
+tests\test_soar.py .....................                                 [ 85%]
+tests\test_storylines.py .....................                           [ 90%]
+tests\test_syslog.py ....                                                [ 91%]
+tests\test_ueba.py ..............................                        [ 98%]
+tests\test_ueba_live.py ssss                                             [100%]
+
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  D:\Project\Aegis\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+.venv\Lib\site-packages\typer\__init__.py:24
+  D:\Project\Aegis\.venv\Lib\site-packages\typer\__init__.py:24: DeprecationWarning: 'click.utils.get_binary_stream' is deprecated and will be removed in Click 9.0.
+    from click.utils import get_binary_stream as get_binary_stream
+
+.venv\Lib\site-packages\typer\__init__.py:25
+  D:\Project\Aegis\.venv\Lib\site-packages\typer\__init__.py:25: DeprecationWarning: 'click.utils.get_text_stream' is deprecated and will be removed in Click 9.0.
+    from click.utils import get_text_stream as get_text_stream
+
+tests/test_detection_lab.py::test_rule_validation_accepts_valid_and_rejects_invalid_constructs
+  D:\Project\Aegis\aegis\schemas.py:169: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x000001A5CFEAC5E0>
+    @model_validator(mode="after")
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: D:\Project\Aegis\docs\validation\cerberus\release-backend.xml -
+=============================== tests coverage ================================
+_______________ coverage: platform win32, python 3.14.3-final-0 _______________
+
+Name                           Stmts   Miss  Cover
+--------------------------------------------------
+aegis\__init__.py                  1      0   100%
+aegis\agent.py                   238     79    67%
+aegis\ai.py                      125     30    76%
+aegis\api.py                    1086    238    78%
+aegis\audit_anchor.py            280     56    80%
+aegis\cli.py                     516    268    48%
+aegis\collector.py               100     15    85%
+aegis\config.py                   90      9    90%
+aegis\crypto.py                  113     12    89%
+aegis\db.py                      430      0   100%
+aegis\detection.py               101      5    95%
+aegis\integrations.py            205     32    84%
+aegis\intel_api.py                98     11    89%
+aegis\intel_providers.py          57      3    95%
+aegis\intelligence.py            159     13    92%
+aegis\investigation.py            56     10    82%
+aegis\notification_worker.py      33     33     0%
+aegis\observability.py            19      9    53%
+aegis\observables.py              79      9    89%
+aegis\parsers.py                 133     12    91%
+aegis\pipeline.py                242     36    85%
+aegis\replay.py                  297     22    93%
+aegis\response.py                 81     16    80%
+aegis\retention.py               149     44    70%
+aegis\rule_checks.py              30      0   100%
+aegis\rules.py                     8      0   100%
+aegis\schemas.py                 354     48    86%
+aegis\security.py                208     18    91%
+aegis\sigma.py                   163     44    73%
+aegis\simulation.py               29      6    79%
+aegis\soar.py                    283     32    89%
+aegis\soar_api.py                109     10    91%
+aegis\storage.py                 134     54    60%
+aegis\storylines.py              123      3    98%
+aegis\syslog.py                  193     51    74%
+aegis\ueba.py                    150      2    99%
+aegis\ueba_api.py                155     22    86%
+aegis\worker.py                  104     23    78%
+--------------------------------------------------
+TOTAL                           6731   1275    81%
+=========== 370 passed, 26 skipped, 4 warnings in 209.66s (0:03:29) ===========

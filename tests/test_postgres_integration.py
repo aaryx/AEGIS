@@ -113,6 +113,25 @@ def pg_system(pg_engine, pg_session_factory):
 # ==============================================================================
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("conflicting", [False, True])
+def test_postgres_cerberus_concurrent_evidence_conflict(pg_system, conflicting):
+    from types import SimpleNamespace
+
+    from tests.test_cerberus import test_simultaneous_source_sequence_reuse as run_scenario
+
+    run_scenario(
+        {
+            "app": SimpleNamespace(
+                state=SimpleNamespace(sessions=pg_system["sessions"], engine=pg_system["engine"])
+            ),
+            "settings": pg_system["settings"],
+            "org": pg_system["org"],
+        },
+        conflicting,
+    )
+
+
 def test_postgres_concurrent_rate_limiting(pg_system):
     """Verify that concurrent first-time requests to the PostgreSQL fallback rate limiter
 

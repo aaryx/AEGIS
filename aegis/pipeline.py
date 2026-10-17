@@ -113,6 +113,13 @@ def ingest(db, settings, organization_id: str, events: list[EventInput], actor: 
             if inserted_id:
                 accepted.append(event.event_id)
             else:
+                # A concurrent insert can win after the initial existence read.
+                # A unique-key conflict alone does not prove identical evidence.
+                stored_hash = db.scalar(
+                    select(EventRecord.evidence_hash).where(EventRecord.id == event.event_id)
+                )
+                if stored_hash != evidence_hash:
+                    raise ValueError("Source sequence was reused with different evidence")
                 duplicates.append(event.event_id)
 
         # Atomic collector upsert & counter increment
