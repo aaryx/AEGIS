@@ -93,6 +93,65 @@ class EventRecord(Owned, Base):
     __table_args__ = (Index("ix_event_queue", "state", "available_at", "created_at"),)
 
 
+class BehaviorProfile(Owned, Base):
+    __tablename__ = "ueba_profiles"
+    entity_type: Mapped[str] = mapped_column(String(16))
+    entity: Mapped[str] = mapped_column(String(254))
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    baseline: Mapped[dict] = mapped_column(JSON)
+    risk_score: Mapped[int] = mapped_column(default=0)
+    __table_args__ = (UniqueConstraint("organization_id", "entity_type", "entity"),
+                      UniqueConstraint("organization_id", "id"))
+
+
+class BehaviorFinding(Owned, Base):
+    __tablename__ = "ueba_findings"
+    profile_id: Mapped[str] = mapped_column(String(80), index=True)
+    detector: Mapped[str] = mapped_column(String(60))
+    version: Mapped[int] = mapped_column(default=1)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    risk_score: Mapped[int]
+    severity: Mapped[str] = mapped_column(String(16))
+    confidence: Mapped[float]
+    comparison: Mapped[dict] = mapped_column(JSON)
+    explanation: Mapped[str] = mapped_column(String(2000))
+    status: Mapped[str] = mapped_column(String(20), default="NEW")
+    lifecycle: Mapped[list] = mapped_column(JSON, default=list)
+    __table_args__ = (
+        ForeignKeyConstraint(["organization_id", "profile_id"],
+                             ["ueba_profiles.organization_id", "ueba_profiles.id"]),
+        UniqueConstraint("organization_id", "profile_id", "detector", "window_end"),
+        UniqueConstraint("organization_id", "id"),
+    )
+
+
+class BehaviorEvidence(Owned, Base):
+    __tablename__ = "ueba_evidence"
+    finding_id: Mapped[str] = mapped_column(String(80), index=True)
+    # References survive event retention; hashes allow independent integrity checks.
+    event_id: Mapped[str] = mapped_column(String(80), index=True)
+    evidence_hash: Mapped[str] = mapped_column(String(64))
+    __table_args__ = (
+        ForeignKeyConstraint(["organization_id", "finding_id"],
+                             ["ueba_findings.organization_id", "ueba_findings.id"], ondelete="CASCADE"),
+        UniqueConstraint("organization_id", "finding_id", "event_id"),
+    )
+
+
+class BehaviorJob(Owned, Base):
+    __tablename__ = "ueba_jobs"
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    refresh_only: Mapped[bool] = mapped_column(default=False)
+    state: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
+    attempts: Mapped[int] = mapped_column(default=0)
+    available_at: Mapped[float] = mapped_column(default=0)
+    config: Mapped[dict] = mapped_column(JSON)
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    __table_args__ = (UniqueConstraint("organization_id", "window_end", "refresh_only"),)
+
+
 class Rule(Owned, Base):
     __tablename__ = "detection_rules"
     rule_id: Mapped[str] = mapped_column(String(80))

@@ -1,4 +1,5 @@
 "use client";
+import { Ueba } from "./ueba";
 
 import { FormEvent, useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -108,12 +109,12 @@ function Workspace() {
       <main id="main">
         {help && <section className="panel shortcuts"><h2><Command size={17} /> Keyboard shortcuts</h2><p><kbd>/</kbd> Hunt · <kbd>g a</kbd> Alerts · <kbd>g i</kbd> Incidents · <kbd>g h</kbd> Hunting · <kbd>g e</kbd> Events · <kbd>Esc</kbd> Close detail</p><button onClick={() => setHelp(false)}>Close</button></section>}
         <div className="page-heading"><div><div className="eyebrow">SECURITY INTELLIGENCE & OPERATIONS</div><h1>{selected ? (selected.resource === "alerts" || selected.resource === "incidents" ? "Investigation workspace" : "Resource details") : page}</h1><p>{selected ? selected.id : page === "Dashboard" ? "Your security posture, grounded in live evidence." : "Explore, investigate, and act on your organization’s security data."}</p></div><div className="heading-status"><span className={`dot ${connected ? "" : "muted-dot"}`} /> {connected ? "Live updates" : "Connecting"}<span className="divider" />{new Date().toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</div></div>
-        {selected ? <><button className="back-button" onClick={() => navigate(page)}>← Back to {page}</button>{selected.resource === "observables" ? <Intelligence id={selected.id} user={user.data} onOpen={open} /> : selected.resource === "storylines" ? <Storylines id={selected.id} user={user.data} onOpen={open} /> : ["alerts", "incidents"].includes(selected.resource) ? <Investigation key={selected.id} id={selected.id} user={user.data} onOpen={open} /> : <ResourceEditor key={selected.id} resource={selected.resource} id={selected.id} user={user.data} onOpen={open} />}</> :
+        {selected ? <><button className="back-button" onClick={() => navigate(page)}>← Back to {page}</button>{selected.resource === "ueba" ? <Ueba key={selected.id} id={selected.id} user={user.data} onOpen={open} /> : selected.resource === "observables" ? <Intelligence id={selected.id} user={user.data} onOpen={open} /> : selected.resource === "storylines" ? <Storylines id={selected.id} user={user.data} onOpen={open} /> : ["alerts", "incidents"].includes(selected.resource) ? <Investigation key={selected.id} id={selected.id} user={user.data} onOpen={open} /> : <ResourceEditor key={selected.id} resource={selected.resource} id={selected.id} user={user.data} onOpen={open} />}</> :
           page === "Dashboard" ? <Dashboard onOpen={open} navigate={navigate} /> :
           ["Threat Hunting", "Events"].includes(page) ? <Hunting onOpen={row => open("events", row)} /> :
           page === "System Health" ? <Health /> : page === "Settings" ? <><SettingsPanel user={user.data} />{user.data.permissions.includes("integrations.manage") && <IntegrationsPanel />}</> :
           page === "MITRE ATT&CK" ? <Mitre /> :
-          page === "Storylines" ? <Storylines user={user.data} onOpen={open} /> :
+          page === "UEBA" ? <Ueba user={user.data} onOpen={open} /> : page === "Storylines" ? <Storylines user={user.data} onOpen={open} /> :
           page === "Detection Rules" ? <DetectionLab user={user.data} onOpen={open} /> :
           page === "Playbooks" ? <Playbooks user={user.data} /> :
           page === "Threat Intelligence" ? <><Intelligence user={user.data} onOpen={open} /><ResourceList resource="iocs" user={user.data} onOpen={row => open("iocs", row)} /></> :

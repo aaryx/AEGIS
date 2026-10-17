@@ -615,3 +615,7 @@ Versioned, tenant-scoped response workflows are available in the console's Playb
 ## IOC enrichment and threat intelligence
 
 The existing Threat Intelligence view and `aegis iocs` CLI support normalized observables, optional VirusTotal reports, labelled mock fixtures, durable lookup history, and attributed investigation/SOAR context. See [provider setup, API, safety controls and verification handoff](docs/intelligence.md). Apply migration `0010`; the existing notification worker handles provider lookups. Providers and automatic lookup are disabled by default.
+
+### Behavioral risk intelligence
+
+See [UEBA operations and analyst guide](docs/ueba.md) for bounded analysis, detectors, risk scoring, API/CLI usage, tenant controls, and retention limits.

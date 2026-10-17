@@ -25,7 +25,7 @@ def test_clean_install_and_repeated_migration(tmp_path, monkeypatch):
             "replay_matches",
         } <= set(inspect(engine).get_table_names())
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0010"
+            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0011"
         assert {"intel_observables", "intel_observable_events", "intel_enrichments", "intel_history"} <= set(
             inspect(engine).get_table_names()
         )
@@ -84,14 +84,25 @@ def test_stepwise_schema_migration_chain(tmp_path, monkeypatch):
             assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0007"
 
         # 4. 0008 to 0010 (Storylines, SOAR, Threat Intelligence)
-        for rev in ["0008", "0009", "0010"]:
+        for rev in ["0008", "0009", "0010", "0011"]:
             command.upgrade(cfg, rev)
             with engine.connect() as conn:
                 assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == rev
 
         insp_head = inspect(engine)
         tables_head = set(insp_head.get_table_names())
-        assert {"storylines", "soar_playbooks", "soar_versions", "soar_runs", "intel_observables", "intel_enrichments"} <= tables_head
+        assert {
+            "storylines",
+            "soar_playbooks",
+            "soar_versions",
+            "soar_runs",
+            "intel_observables",
+            "intel_enrichments",
+            "ueba_profiles",
+            "ueba_findings",
+            "ueba_evidence",
+            "ueba_jobs",
+        } <= tables_head
 
         engine.dispose()
     finally:

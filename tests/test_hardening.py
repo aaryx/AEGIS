@@ -181,3 +181,57 @@ def test_event_record_evidence_hash_integrity(system):
             raw = rec.payload.get("raw_event") if isinstance(rec.payload, dict) else None
             assert raw is not None, "EventRecord payload must contain raw_event"
             assert digest(raw) == rec.evidence_hash, "Evidence hash must match digest(raw_event)"
+
+
+def test_event_record_evidence_tampering_and_recovery_verification(system):
+    """Verify that tampering with raw_event, evidence_hash, or omitting raw_event
+    is strictly detected by the recovery drill verification invariant.
+    """
+    from aegis.parsers import digest
+
+    events = simulate("benign")
+    client = system["client"]
+    client.post(
+        "/api/v1/events/ingest", json={"events": [event.model_dump(mode="json") for event in events]}
+    ).raise_for_status()
+
+    def verify_record(rec):
+        raw = rec.payload.get("raw_event") if isinstance(rec.payload, dict) else None
+        if raw is None or digest(raw) != rec.evidence_hash:
+            raise RuntimeError("Evidence hash mismatch")
+
+    with system["app"].state.sessions() as db:
+        record = db.scalars(select(EventRecord)).first()
+        assert record is not None
+        # Untampered record passes verification
+        verify_record(record)
+
+    # 1. Tampered payload content
+    with system["app"].state.sessions.begin() as db:
+        rec = db.scalars(select(EventRecord)).first()
+        rec.payload = {**rec.payload, "raw_event": "tampered_raw_message"}
+
+    with system["app"].state.sessions() as db:
+        rec = db.scalars(select(EventRecord)).first()
+        with pytest.raises(RuntimeError, match="Evidence hash mismatch"):
+            verify_record(rec)
+
+    # 2. Tampered evidence_hash
+    with system["app"].state.sessions.begin() as db:
+        rec = db.scalars(select(EventRecord)).first()
+        rec.evidence_hash = "0" * 64
+
+    with system["app"].state.sessions() as db:
+        rec = db.scalars(select(EventRecord)).first()
+        with pytest.raises(RuntimeError, match="Evidence hash mismatch"):
+            verify_record(rec)
+
+    # 3. Missing raw_event
+    with system["app"].state.sessions.begin() as db:
+        rec = db.scalars(select(EventRecord)).first()
+        rec.payload = {"message": "missing_raw_event_key"}
+
+    with system["app"].state.sessions() as db:
+        rec = db.scalars(select(EventRecord)).first()
+        with pytest.raises(RuntimeError, match="Evidence hash mismatch"):
+            verify_record(rec)
