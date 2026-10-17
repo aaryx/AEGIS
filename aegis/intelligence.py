@@ -315,8 +315,16 @@ def related(db, org, observable_id):
     event_ids = select(ObservableEvent.event_id).where(
         ObservableEvent.organization_id == org, ObservableEvent.observable_id == observable_id
     )
-    alert_ids = select(AlertEvent.alert_id).where(AlertEvent.event_id.in_(event_ids))
-    incident_ids = select(IncidentAlert.incident_id).where(IncidentAlert.alert_id.in_(alert_ids))
+    alert_ids = (
+        select(AlertEvent.alert_id)
+        .join(Alert, Alert.id == AlertEvent.alert_id)
+        .where(Alert.organization_id == org, AlertEvent.event_id.in_(event_ids))
+    )
+    incident_ids = (
+        select(IncidentAlert.incident_id)
+        .join(Incident, Incident.id == IncidentAlert.incident_id)
+        .where(Incident.organization_id == org, IncidentAlert.alert_id.in_(alert_ids))
+    )
     return {
         "events": [
             r.id

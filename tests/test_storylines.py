@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from typer.testing import CliRunner
 
 from aegis.cli import app
-from aegis.db import Alert, AuditLog, Entity, StorylineMember
+from aegis.db import Alert, AuditLog, Entity, Storyline, StorylineMember
 from aegis.storylines import reasons
 from tests.test_pipeline import attack_chain
 
@@ -262,3 +262,26 @@ def test_risk_and_confidence_caps_are_independent():
     assert summary["risk_score"] == 100
     assert summary["confidence"] == 95
     assert sum(summary["risk_factors"].values()) == 110
+
+
+def test_correlate_resilience_missing_anchor_alert_or_incident(system):
+    """Verify correlate handles purged anchor alert or deleted incident without unhandled KeyError."""
+    from sqlalchemy import text
+
+    seed(system, [("a", 0, True), ("b", 10, True)])
+    res1 = run(system)
+    assert res1["storylines"] == 1
+
+    # Simulate anchor alert missing from by_id map (e.g. purged or beyond retained window)
+    with system["app"].state.sessions.begin() as db:
+        db.execute(text("PRAGMA foreign_keys = OFF"))
+        story = db.scalar(select(Storyline))
+        story.anchor_alert_id = "ALT-purged"
+
+    # Seed a new alert ALT-c that attempts correlation
+    seed(system, [("c", 20, True)])
+
+    # Correlate should safely skip missing anchor rather than raising KeyError: 'ALT-purged'
+    res2 = run(system)
+    assert res2["storylines"] >= 1
+

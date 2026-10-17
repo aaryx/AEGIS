@@ -155,9 +155,13 @@ def correlate(db, settings, principal, window_seconds):
             continue
         chosen, explanation = None, []
         for story in stories:
-            if incidents[story.incident_id].status in {"RESOLVED", "CLOSED"}:
+            incident = incidents.get(story.incident_id)
+            if not incident or incident.status in {"RESOLVED", "CLOSED"}:
                 continue
-            explanation = reasons(by_id[story.anchor_alert_id], alert, entities, story.window_seconds)
+            anchor = by_id.get(story.anchor_alert_id)
+            if not anchor:
+                continue
+            explanation = reasons(anchor, alert, entities, story.window_seconds)
             if explanation:
                 chosen = story
                 break
@@ -215,28 +219,31 @@ def correlate(db, settings, principal, window_seconds):
         db.add(IncidentAlert(incident_id=chosen.incident_id, alert_id=alert.id))
         changed.add(chosen.id)
     for story in stories:
-        group = [m for m in members if m.storyline_id == story.id]
+        group = [m for m in members if m.storyline_id == story.id and m.alert_id in by_id]
+        if not group:
+            continue
         summary = summarize([by_id[m.alert_id] for m in group], group)
         if story.summary != summary:
             changed.add(story.id)
             story.summary = summary
-            incident = incidents[story.incident_id]
-            incident.severity = summary["severity"]
-            incident.priority = 1 if summary["risk_score"] >= 80 else 2 if summary["risk_score"] >= 50 else 3
-            incident.revision += 1
-            audit(
-                db,
-                settings,
-                org,
-                principal.user.id,
-                "storylines.correlate",
-                incident.id,
-                details={
-                    "storyline_id": story.id,
-                    "alert_count": len(group),
-                    "window_seconds": story.window_seconds,
-                },
-            )
+            incident = incidents.get(story.incident_id)
+            if incident:
+                incident.severity = summary["severity"]
+                incident.priority = 1 if summary["risk_score"] >= 80 else 2 if summary["risk_score"] >= 50 else 3
+                incident.revision += 1
+                audit(
+                    db,
+                    settings,
+                    org,
+                    principal.user.id,
+                    "storylines.correlate",
+                    incident.id,
+                    details={
+                        "storyline_id": story.id,
+                        "alert_count": len(group),
+                        "window_seconds": story.window_seconds,
+                    },
+                )
     db.flush()
     return {
         "changed": len(changed),

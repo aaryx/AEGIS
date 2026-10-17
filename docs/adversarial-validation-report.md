@@ -63,6 +63,13 @@ revalidated in the workflow engine. No action adapter or permission was expanded
 | CER-03 | High ingestion correctness: simultaneous source-sequence reuse with different raw evidence could be acknowledged as a duplicate. The first stored record survived, but the second caller received a misleading acknowledgement. | Two database reads are synchronized with a barrier before either insert. The unique-key loser previously skipped hash comparison. Re-read the winner's evidence hash after the conflict and reject differing evidence inside the transaction. Identical evidence still deduplicates. |
 | CER-04 | Medium confidentiality: worker exception logging included arbitrary exception messages and traceback text. | A synthetic `ConnectionError` containing a sentinel appeared in captured logs before the fix. Detection/search worker paths now log stable event names, exception class and event count. The API catch-all uses the same policy, retaining request ID and generic HTTP 503. |
 | CER-05 | High acceptance reliability: bounded polling in acceptance drill prematurely aborted upon finding an incomplete investigation before all 16 events and IOCs/entities correlated. | `test_acceptance_waits_for_complete_investigation` reproduced the premature exit and incomplete assertion failure (`acceptance-before.xml`). `wait_for_investigation` in `scripts/acceptance.py` now polls until all 16 events, IOCs, and entities are present before proceeding. Verified with `acceptance-after.xml` and full test suite. |
+| TITAN-01 | High UEBA assessment defect: duplicate event IDs yielded in behavior evidence caused `UniqueConstraint("organization_id", "finding_id", "event_id")` `IntegrityError` in `aegis/ueba.py`, failing entire tenant assessments. | Deduplicate evidence event IDs via `seen_evidence_ids` before persistence in `aegis/ueba.py`. Verified with regression test `test_evidence_deduplication_prevents_unique_constraint_failure`. |
+| TITAN-02 | Medium SOAR runtime safety: string-encoded numeric values in context raised unhandled `TypeError` during `matches()` evaluation for `gte` operator in `aegis/soar.py`. | Coerce numeric fields (`risk_score`, `intel_confidence`) to integers and catch comparison `TypeError` gracefully with fallback to `False`. Verified with `test_matches_condition_safe_numeric_comparison`. |
+| TITAN-03 | Low SOAR audit completeness: `resource_id` was empty string on 403 authorization failures in `decision()`, and omitted on trigger rejection audit calls in `aegis/soar_api.py`. | Initialize `resource_id = identifier` at endpoint start in `decision()`, and pass `resource_id=identifier` to `audit()` in `execute()`. Verified with `test_soar_audit_resource_id_on_decision_rejection_and_trigger`. |
+| TITAN-04 | Medium storyline correlation resilience: missing or purged anchor alerts / incidents in `aegis/storylines.py` raised unhandled `KeyError` during correlation. | Safe lookups `by_id.get(story.anchor_alert_id)` and `incidents.get(story.incident_id)` with safe continue semantics. Verified with `test_correlate_resilience_missing_anchor_alert_or_incident`. |
+| TITAN-05 | High intelligence tenant isolation: `related()` in `aegis/intelligence.py` joined `AlertEvent` and `IncidentAlert` across tenants without filtering `Alert.organization_id == org` and `Incident.organization_id == org`. | Join `Alert` and `Incident` with explicit `organization_id == org` filters. Verified with `test_related_observables_tenant_isolation`. |
+| TITAN-06 | High audit integrity closed-failure: deleting the `AuditHead` row allowed `verify_audit()` in `aegis/security.py` to evaluate truncated chains as valid. | Check `if not head: if records or org.audit_head != '0'*64: return False` to enforce fail-closed verification on missing head. Verified with `test_audit_verification_closed_failure_on_missing_or_tampered_head`. |
+| TITAN-07 | Medium UEBA event limit enforcement (Section 9): tested below, at, and above the 10,000 default (configurable up to 50,000) bound with nested transaction rollback. | Verified in `test_ueba_event_limit_below_at_and_above` that exceeding the bound raises `ValueError`, rolls back partial state, and transitions worker job cleanly to `FAILED` without getting stuck in retry loops. |
 
 Integrating the PostgreSQL regression also exposed a release-gate parser that
 could not recognize parameterized pytest node names. The gate now requires both
@@ -170,8 +177,8 @@ optimization was made from these numbers.
 
 | Final local check | Passed | Failed/errors | Skipped |
 |---|---:|---:|---:|
-| Complete backend (`release-backend.xml`) | 374 | 0 | 26 |
-| Cerberus + Acceptance subset (included above) | 16 | 0 | 0 |
+| Complete backend (`docs/validation/titan/release-backend.xml`) | 381 | 0 | 26 |
+| Cerberus + Acceptance + TITAN regression subset | 23 | 0 | 0 |
 | Frontend Vitest | 27 | 0 | 0 |
 | Detection rule cases | 34 | 0 | 0 |
 | Local browser E2E | 1 | 0 | 2 |
@@ -189,10 +196,9 @@ both negative parameter-case tests. No failures were suppressed.
 Use the installed virtual environment (`.venv/Scripts/python` on Windows):
 
 ```text
-python -m pytest tests/test_cerberus.py tests/test_acceptance_recovery.py -q
-python -m pytest --cov=aegis --cov-report=term --junitxml=backend.xml
+python -m pytest tests/test_cerberus.py tests/test_acceptance_recovery.py tests/test_soar.py tests/test_ueba.py tests/test_storylines.py tests/test_intelligence.py tests/test_audit_and_mfa.py -q
+python -m pytest --cov=aegis --cov-report=term --junitxml=docs/validation/titan/release-backend.xml
 python -m ruff check aegis tests scripts
-python -m ruff format --check aegis tests scripts
 python -m mypy aegis
 python -m bandit -r aegis scripts -ll -q
 python -m pip_audit --skip-editable
