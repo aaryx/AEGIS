@@ -38,6 +38,18 @@ class Settings(BaseSettings):
     queue_capacity: int = Field(100000, ge=100)
     worker_batch_size: int = Field(100, ge=1, le=500)
     worker_max_attempts: int = Field(6, ge=1, le=12)
+    soar_queue_capacity: int = Field(100, ge=1, le=10000)
+    soar_batch_size: int = Field(20, ge=1, le=100)
+    intel_auto_provider: Literal["none", "mock", "virustotal"] = "none"
+    intel_mock_enabled: bool = False
+    intel_vt_enabled: bool = False
+    intel_vt_api_key: SecretStr = SecretStr("")
+    intel_cache_seconds: int = Field(3600, ge=60, le=604800)
+    intel_failure_cache_seconds: int = Field(300, ge=30, le=3600)
+    intel_refresh_seconds: int = Field(60, ge=30, le=3600)
+    intel_requests_per_minute: int = Field(4, ge=1, le=1000)
+    intel_queue_capacity: int = Field(500, ge=1, le=10000)
+    intel_timeout_seconds: int = Field(5, ge=1, le=15)
     detection_lateness_seconds: int = Field(120, ge=0, le=3600)
     detection_window_limit: int = Field(10000, ge=100, le=50000)
     integration_allowed_hosts: list[str] = Field(default_factory=list)

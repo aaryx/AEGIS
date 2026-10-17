@@ -22,7 +22,14 @@ def main():
     try:
         while not stopped.is_set():
             try:
-                dispatch_once(settings, sessions)
+                try:
+                    dispatch_once(settings, sessions)
+                except Exception as exc:
+                    logging.getLogger("aegis.notifications").error(
+                        "notification_dispatch_failed", extra={"error_type": type(exc).__name__}
+                    )
+                from aegis.intelligence import lookup_once
+                lookup_once(settings, sessions)
                 with sessions.begin() as db:
                     heartbeat(db, f"notifications-{os.environ.get('HOSTNAME', 'local')}")
             except Exception as exc:

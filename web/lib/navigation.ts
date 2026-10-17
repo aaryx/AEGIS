@@ -2,7 +2,7 @@ export type Location = { page: string; selected: { resource: string; id: string 
 const pages: Record<string, string> = {
   dashboard: "Dashboard", alerts: "Alerts", incidents: "Incidents", storylines: "Storylines", cases: "Cases",
   hunting: "Threat Hunting", events: "Events", entities: "Entities", rules: "Detection Rules",
-  iocs: "Threat Intelligence", mitre: "MITRE ATT&CK", reports: "Reports", playbooks: "Playbooks",
+  iocs: "Threat Intelligence", observables: "Threat Intelligence", mitre: "MITRE ATT&CK", reports: "Reports", playbooks: "Playbooks",
   collectors: "Collectors", health: "System Health", audit: "Audit", settings: "Settings"
 };
 export function parseLocation(hash: string): Location {

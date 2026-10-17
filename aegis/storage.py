@@ -187,15 +187,30 @@ class OpenSearchStorage:
     def index(self, organization_id, events):
         actions = []
         for event in events:
+            raw_val = event.get("raw_event")
+            if isinstance(raw_val, dict) and "original" in raw_val:
+                raw_event_doc = raw_val
+            else:
+                raw_event_doc = {"original": str(raw_val if raw_val is not None else event.get("message", ""))}
             document = event | {
                 "organization_id": organization_id,
-                "raw_event": {"original": event["raw_event"]},
+                "raw_event": raw_event_doc,
             }
+            ts = event.get("timestamp")
+            if isinstance(ts, datetime):
+                dt = ts.astimezone(UTC) if ts.tzinfo else ts.replace(tzinfo=UTC)
+            elif isinstance(ts, str):
+                try:
+                    dt = datetime.fromisoformat(ts).astimezone(UTC)
+                except (ValueError, TypeError):
+                    dt = datetime.now(UTC)
+            else:
+                dt = datetime.now(UTC)
+            event_id = event.get("event_id") or f"evt-{dt.timestamp()}"
             actions.append(
                 {
-                    "_index": "aegis-events-"
-                    + datetime.fromisoformat(event["timestamp"]).astimezone(UTC).strftime("%Y.%m.%d"),
-                    "_id": event["event_id"],
+                    "_index": "aegis-events-" + dt.strftime("%Y.%m.%d"),
+                    "_id": event_id,
                     "_source": document,
                 }
             )

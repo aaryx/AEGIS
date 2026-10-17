@@ -10,6 +10,9 @@ depends_on = None
 
 
 def upgrade():
+    bind = op.get_bind()
+    insp = sa.inspect(bind)
+    existing_tables = set(insp.get_table_names())
     for name, columns in (
         (
             "storylines",
@@ -35,19 +38,20 @@ def upgrade():
             ],
         ),
     ):
-        op.create_table(
-            name,
-            sa.Column("id", sa.String(80), primary_key=True),
-            sa.Column(
-                "organization_id",
-                sa.String(36),
-                sa.ForeignKey("organizations.id"),
-                nullable=False,
-                index=True,
-            ),
-            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, index=True),
-            *columns,
-        )
+        if name not in existing_tables:
+            op.create_table(
+                name,
+                sa.Column("id", sa.String(80), primary_key=True),
+                sa.Column(
+                    "organization_id",
+                    sa.String(36),
+                    sa.ForeignKey("organizations.id"),
+                    nullable=False,
+                    index=True,
+                ),
+                sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, index=True),
+                *columns,
+            )
 
 
 def downgrade():

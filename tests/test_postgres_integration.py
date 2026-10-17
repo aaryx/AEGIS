@@ -75,6 +75,11 @@ def pg_system(pg_engine, pg_session_factory):
         environment="testing",
         database_url=POSTGRES_TEST_URL,
         audit_secret=AUDIT_SECRET,
+        redis_url=os.environ.get("REDIS_URL"),
+        opensearch_url=os.environ.get("OPENSEARCH_URL"),
+        opensearch_username=os.environ.get("OPENSEARCH_USERNAME", "aegis"),
+        opensearch_password=os.environ.get("OPENSEARCH_PASSWORD"),
+        intel_mock_enabled=True,
         _env_file=None,
     )
     with pg_session_factory.begin() as db:
@@ -744,6 +749,18 @@ def test_postgres_schema_migration_previous_to_current(pg_engine):
         with mig_engine.connect() as conn:
             assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0008"
             assert conn.execute(text("SELECT count(*) FROM storylines")).scalar() == 0
+
+        # 5. Upgrade to revision 0009 (SOAR)
+        command.upgrade(cfg, "0009")
+        with mig_engine.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0009"
+            assert conn.execute(text("SELECT count(*) FROM soar_playbooks")).scalar() == 0
+
+        # 6. Upgrade to revision 0010 (Threat Intelligence)
+        command.upgrade(cfg, "0010")
+        with mig_engine.connect() as conn:
+            assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0010"
+            assert conn.execute(text("SELECT count(*) FROM intel_observables")).scalar() == 0
         mig_engine.dispose()
     finally:
         raw_conn.execute(f"DROP DATABASE IF EXISTS {mig_db_name}")
@@ -893,3 +910,606 @@ def test_postgres_concurrent_storyline_correlation(pg_system):
         assert db.scalar(select(func.count()).select_from(Storyline).where(Storyline.organization_id == org)) == 1
         assert db.scalar(select(func.count()).select_from(StorylineMember).where(StorylineMember.organization_id == org)) == 4
         assert verify_audit(db, pg_system["settings"], org) is True
+
+
+def test_postgres_soar_transactional_concurrency(pg_system):
+    """Run the same workflow concurrently against real PostgreSQL when configured."""
+    from types import SimpleNamespace
+
+    from aegis.db import CaseNote, Incident, Playbook, PlaybookVersion, WorkflowRun
+    from aegis.soar import RunInput, enqueue, process_workflows
+
+    sessions = pg_system["sessions"]
+    org = pg_system["org"]
+    with sessions.begin() as db:
+        user = db.get(User, pg_system["user_id"])
+        user.role = "SUPER_ADMIN"
+        source = Incident(organization_id=org, title="SOAR concurrency", severity="high")
+        book = Playbook(organization_id=org, name="Concurrency", enabled=True, version=1)
+        db.add_all([source, book])
+        db.flush()
+        db.add(PlaybookVersion(organization_id=org, playbook_id=book.id, version=1, author=user.id,
+            document={"description": "Concurrent local note", "trigger": {"source": "incident"},
+                      "steps": [{"id": "note", "action": "incident_note"}]}))
+        source_id, book_id = source.id, book.id
+        principal = SimpleNamespace(user=user, organization_id=org)
+    def submit(_):
+        with sessions.begin() as db:
+            return enqueue(db, pg_system["settings"], principal, book_id, RunInput(
+                source_type="incident", source_id=source_id, dry_run=False, idempotency_key="pg-concurrent")).id
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        identifiers = list(pool.map(submit, range(4)))
+    assert len(set(identifiers)) == 1
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda _: process_workflows(pg_system["settings"], sessions), range(4)))
+    with sessions() as db:
+        assert db.get(WorkflowRun, identifiers[0]).status == "SUCCEEDED"
+        assert len(list(db.scalars(select(CaseNote).where(CaseNote.organization_id == org)))) == 1
+        assert verify_audit(db, pg_system["settings"], org) is True
+
+
+# ==============================================================================
+# 15. LIVE IOC CACHE AND LOOKUP PERSISTENCE (POSTGRESQL + REDIS)
+# ==============================================================================
+
+
+def test_postgres_ioc_cache_and_lookup_persistence(pg_system):
+    """Validate IOC observation, PostgreSQL persistence, and Redis caching on real infra."""
+    from redis import Redis
+
+    from aegis.db import Enrichment, EnrichmentHistory, Observable
+    from aegis.intelligence import lookup_once, observe, queue, source_context
+    from aegis.observables import extract
+
+    sessions = pg_system["sessions"]
+    settings = pg_system["settings"]
+    org = pg_system["org"]
+
+    if not settings.redis_url:
+        pytest.skip("REDIS_URL not configured")
+
+    redis = Redis.from_url(settings.redis_url, socket_timeout=3)
+    assert redis.ping() is True
+
+    # 1. Ingest event with observables into real PostgreSQL
+    event_payload = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "source_ip": "198.51.100.55",
+        "destination_ip": "203.0.113.88",
+        "network": {"domain": "malicious.example.test"},
+        "url": "https://malicious.example.test/beacon",
+        "file": {"sha256": "a" * 64},
+    }
+    extracted = extract(event_payload)
+    assert len(extracted) >= 5
+
+    with sessions.begin() as db:
+        event_rec = EventRecord(
+            organization_id=org,
+            source="ioc-live-test",
+            timestamp=datetime.now(UTC),
+            evidence_hash="1" * 64,
+            payload=event_payload,
+            state="PROCESSED",
+        )
+        db.add(event_rec)
+        db.flush()
+        event_id = event_rec.id
+
+        # 2. Observe all extracted observables
+        for kind, value, _ in extracted:
+            obs = observe(db, org, kind, value, event_rec)
+            assert obs.id is not None
+            assert obs.organization_id == org
+
+    # 3. Queue enrichment with mock provider inside transaction commit
+    with sessions.begin() as db:
+        stored_obs = list(db.scalars(select(Observable).where(Observable.organization_id == org)))
+        assert len(stored_obs) >= 5
+        for obs in stored_obs:
+            queue(db, settings, obs, "mock")
+
+    # 4. Process enrichment via lookup_once
+    processed = lookup_once(settings, sessions)
+    assert processed > 0
+
+    with sessions() as db:
+        enrichments = list(db.scalars(select(Enrichment).where(Enrichment.organization_id == org)))
+        assert len(enrichments) > 0
+        assert any(e.status in {"COMPLETED", "COMPLETE", "UNKNOWN"} for e in enrichments)
+        history = list(db.scalars(select(EnrichmentHistory).where(EnrichmentHistory.organization_id == org)))
+        assert len(history) > 0
+
+    # 5. Verify source_context queries cached data
+    with sessions() as db:
+        event_rec = db.get(EventRecord, event_id)
+        ctx = source_context(db, org, [event_rec])
+        assert len(ctx) > 0
+
+
+# ==============================================================================
+# 16. SOAR EXECUTION PERSISTENCE, APPROVAL GATE, AND RECOVERY
+# ==============================================================================
+
+
+def test_postgres_soar_approval_and_recovery_persistence(pg_system):
+    """Validate SOAR approval gate, simulated containment, and recovery in real PostgreSQL."""
+    from types import SimpleNamespace
+
+    from aegis.db import CaseNote, Incident, Playbook, PlaybookVersion, User, WorkflowRun
+    from aegis.soar import RunInput, enqueue, process_workflows, record
+
+    sessions = pg_system["sessions"]
+    settings = pg_system["settings"]
+    org = pg_system["org"]
+
+    with sessions.begin() as db:
+        senior_analyst = User(
+            organization_id=org, username=f"senior_{uuid4().hex[:6]}", password_hash="h", role="SENIOR_ANALYST"
+        )
+        manager = User(
+            organization_id=org, username=f"mgr_{uuid4().hex[:6]}", password_hash="h", role="SOC_MANAGER"
+        )
+        incident = Incident(organization_id=org, title="SOAR Approval & Recovery", severity="critical")
+        entity = Entity(organization_id=org, type="host", value="compromised-server-01")
+        book = Playbook(organization_id=org, name="Isolate Host With Approval", enabled=True, version=1)
+        db.add_all([senior_analyst, manager, incident, entity, book])
+        db.flush()
+
+        # Playbook requires containment action (simulate_isolate_host) + incident_note
+        db.add(
+            PlaybookVersion(
+                organization_id=org,
+                playbook_id=book.id,
+                version=1,
+                author=manager.id,
+                document={
+                    "description": "Simulated containment after approval",
+                    "trigger": {"source": "incident"},
+                    "input_schema": {"target_id": "entity"},
+                    "steps": [
+                        {"id": "isolate", "action": "simulate_isolate_host"},
+                        {"id": "note", "action": "incident_note"},
+                    ],
+                },
+            )
+        )
+        book_id, incident_id, entity_id = book.id, incident.id, entity.id
+        manager_id = manager.id
+        senior_p = SimpleNamespace(user=senior_analyst, organization_id=org)
+
+    # 1. Enqueue workflow by senior analyst (has playbooks.execute permission)
+    with sessions.begin() as db:
+        run = enqueue(
+            db,
+            settings,
+            senior_p,
+            book_id,
+            RunInput(
+                source_type="incident",
+                source_id=incident_id,
+                dry_run=False,
+                inputs={"target_id": entity_id},
+                idempotency_key="soar-approval-gate-key",
+            ),
+        )
+        run_id = run.id
+
+    # 2. Duplicate enqueue must be idempotent
+    with sessions.begin() as db:
+        dup = enqueue(
+            db,
+            settings,
+            senior_p,
+            book_id,
+            RunInput(
+                source_type="incident",
+                source_id=incident_id,
+                dry_run=False,
+                inputs={"target_id": entity_id},
+                idempotency_key="soar-approval-gate-key",
+            ),
+        )
+        assert dup.id == run_id
+
+    # 3. Process workflow -> containment action requires approval -> transitions to WAITING_FOR_APPROVAL
+    process_workflows(settings, sessions)
+    with sessions() as db:
+        run = db.get(WorkflowRun, run_id)
+        assert run.status == "WAITING_FOR_APPROVAL"
+        assert run.approved_by is None
+
+    # 4. Independent approval by SOC_MANAGER succeeds (two-person rule)
+    with sessions.begin() as db:
+        run = db.get(WorkflowRun, run_id)
+        assert run.requested_by != manager_id
+        run.approved_by, run.approved_at, run.status = manager_id, time.time(), "QUEUED"
+        record(db, settings, run, "approve", manager_id)
+
+    # 5. Worker processes approved workflow to completion (executing each step in order)
+    for _ in range(5):
+        if process_workflows(settings, sessions) == 0:
+            break
+
+    with sessions() as db:
+        run = db.get(WorkflowRun, run_id)
+        assert run.status == "SUCCEEDED"
+        # Confirm containment was strictly simulated
+        assert len(run.history) == 2
+        isolate_step = run.history[0]
+        assert isolate_step["step"] == "isolate"
+        assert isolate_step["status"] == "SUCCEEDED"
+        assert isolate_step["output"]["data"]["action"] == "simulate_isolate_host"
+        assert "Simulation only" in isolate_step["output"]["data"]["message"]
+
+        # Confirm case note was persisted
+        notes = list(
+            db.scalars(
+                select(CaseNote).where(CaseNote.organization_id == org, CaseNote.resource_id == incident_id)
+            )
+        )
+        assert len(notes) == 1
+        assert "No external containment performed" in notes[0].text
+
+        # Cryptographically verify the tamper-evident audit log
+        assert verify_audit(db, settings, org) is True
+
+
+# ==============================================================================
+# 17. OPENSEARCH INTEGRATION, INDEXING, AND TENANT ISOLATION
+# ==============================================================================
+
+
+def test_postgres_opensearch_indexing_and_isolation(pg_system):
+    """Validate real OpenSearch indexing, cursor search, and strict tenant isolation."""
+    from aegis.schemas import SearchQuery
+    from aegis.storage import OpenSearchStorage
+
+    settings = pg_system["settings"]
+    org_a = pg_system["org"]
+    org_b = f"org_b_{uuid4().hex[:8]}"
+
+    if not settings.opensearch_url:
+        pytest.skip("OPENSEARCH_URL not configured")
+
+    storage = OpenSearchStorage(settings)
+    storage.setup()
+    assert storage.health() == "HEALTHY"
+
+    # Index events for Tenant A
+    event_a1 = {
+        "event_id": f"evt_a1_{uuid4().hex[:8]}",
+        "organization_id": org_a,
+        "source": "os-test",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "event_category": "network",
+        "host": "HOST-A",
+        "evidence_hash": "a" * 64,
+        "raw_event": "network connect 443",
+        "payload": {"action": "allow", "port": 443},
+    }
+    event_a2 = {
+        "event_id": f"evt_a2_{uuid4().hex[:8]}",
+        "organization_id": org_a,
+        "source": "os-test",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "event_category": "authentication",
+        "host": "HOST-A",
+        "evidence_hash": "b" * 64,
+        "raw_event": "auth login alice",
+        "payload": {"action": "login", "user": "alice"},
+    }
+    # Index event for Tenant B
+    event_b1 = {
+        "event_id": f"evt_b1_{uuid4().hex[:8]}",
+        "organization_id": org_b,
+        "source": "os-test",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "event_category": "network",
+        "host": "HOST-B",
+        "evidence_hash": "c" * 64,
+        "raw_event": "network block 22",
+        "payload": {"action": "block", "port": 22},
+    }
+
+    storage.index(org_a, [event_a1, event_a2])
+    storage.index(org_b, [event_b1])
+
+    # Allow OpenSearch to refresh index
+    storage.client.indices.refresh(index="aegis-events*")
+
+    # Query Tenant A: must see only Tenant A's events
+    query_a = SearchQuery(limit=10, aggregate="event_category")
+    results_a = storage.search(org_a, query_a)
+    assert results_a["total"] >= 2
+    item_ids_a = {item["event_id"] for item in results_a["items"]}
+    assert event_a1["event_id"] in item_ids_a
+    assert event_a2["event_id"] in item_ids_a
+    assert event_b1["event_id"] not in item_ids_a
+
+    # Query Tenant B: must see only Tenant B's events
+    results_b = storage.search(org_b, SearchQuery(limit=10))
+    item_ids_b = {item["event_id"] for item in results_b["items"]}
+    assert event_b1["event_id"] in item_ids_b
+    assert event_a1["event_id"] not in item_ids_b
+    assert event_a2["event_id"] not in item_ids_b
+
+    # Query non-existent tenant: must return 0 results
+    results_empty = storage.search(str(uuid4()), SearchQuery(limit=10))
+    assert results_empty["total"] == 0
+    assert len(results_empty["items"]) == 0
+
+
+# ==============================================================================
+# 18. POSTGRESQL CROSS-TENANT DATABASE TRIGGER CONSTRAINTS
+# ==============================================================================
+
+
+def test_postgres_cross_tenant_database_constraints(pg_system):
+    """Validate PostgreSQL triggers enforce multi-tenant isolation on relational joins."""
+    from sqlalchemy.exc import DBAPIError
+
+    from aegis.db import Alert, AlertEvent, Incident, Observable, ObservableEvent
+
+    sessions = pg_system["sessions"]
+    org_a = pg_system["org"]
+
+    with sessions.begin() as db:
+        org_b_row = Organization(name=f"Foreign Tenant {uuid4().hex[:6]}")
+        db.add(org_b_row)
+        db.flush()
+        org_b = org_b_row.id
+
+        # Ingest Event for Org A and Event for Org B
+        event_a = EventRecord(
+            organization_id=org_a, source="s", timestamp=datetime.now(UTC), evidence_hash="1" * 64, payload={}, state="PROCESSED"
+        )
+        event_b = EventRecord(
+            organization_id=org_b, source="s", timestamp=datetime.now(UTC), evidence_hash="2" * 64, payload={}, state="PROCESSED"
+        )
+        obs_a = Observable(
+            organization_id=org_a, type="ip", value="1.1.1.1", external_allowed=True, normalized_key="key_a"
+        )
+        alert_a = Alert(
+            id=f"ALT-{uuid4().hex[:8]}",
+            organization_id=org_a,
+            title="Alert A",
+            severity="high",
+            rule_id="r1",
+            rule_version=1,
+            fingerprint=uuid4().hex,
+            correlation_key=uuid4().hex,
+            confidence=90,
+            risk_score=80,
+            risk_factors={},
+            explanation={},
+            mitre_techniques=[],
+            entity_ids=[],
+            first_seen=datetime.now(UTC),
+            last_seen=datetime.now(UTC),
+        )
+        incident_a = Incident(organization_id=org_a, title="Incident A", severity="high")
+        db.add_all([event_a, event_b, obs_a, alert_a, incident_a])
+        db.flush()
+        event_b_id, obs_a_id = event_b.id, obs_a.id
+        alert_a_id = alert_a.id
+
+    # 1. Cross-tenant link in intel_observable_events must be rejected by PostgreSQL trigger
+    with sessions() as db:
+        try:
+            db.add(ObservableEvent(organization_id=org_a, observable_id=obs_a_id, event_id=event_b_id))
+            db.flush()
+            db.rollback()
+            pytest.fail("PostgreSQL allowed cross-tenant observable-to-event link")
+        except DBAPIError:
+            db.rollback()
+
+    # 2. Cross-tenant link in alert_events must be rejected by PostgreSQL trigger
+    with sessions() as db:
+        try:
+            db.add(AlertEvent(alert_id=alert_a_id, event_id=event_b_id))
+            db.flush()
+            db.rollback()
+            pytest.fail("PostgreSQL allowed cross-tenant alert-to-event link")
+        except DBAPIError:
+            db.rollback()
+
+
+# ==============================================================================
+# 19. FULL END-TO-END IOC -> DETECTION -> SOAR -> AUDIT WORKFLOW
+# ==============================================================================
+
+
+def test_postgres_full_e2e_ioc_to_soar_simulated_containment_pipeline(pg_system):
+    """Validate full live IOC -> detection -> incident -> SOAR -> approval -> containment -> audit pipeline."""
+    from types import SimpleNamespace
+
+    from aegis.db import (
+        Alert,
+        CaseNote,
+        Entity,
+        Incident,
+        Observable,
+        Playbook,
+        PlaybookVersion,
+        Storyline,
+        User,
+        WorkflowRun,
+    )
+    from aegis.intelligence import index_once
+    from aegis.pipeline import ingest
+    from aegis.soar import RunInput, enqueue, process_workflows, record
+    from aegis.storage import LocalStorage, OpenSearchStorage
+    from aegis.storylines import correlate
+    from aegis.worker import process_once
+
+    sessions = pg_system["sessions"]
+    settings = pg_system["settings"]
+    org = pg_system["org"]
+    storage = OpenSearchStorage(settings) if settings.opensearch_url else LocalStorage(sessions)
+
+    # 1. Setup users
+    with sessions.begin() as db:
+        senior = User(
+            organization_id=org, username=f"pipe_senior_{uuid4().hex[:6]}", password_hash="h", role="SENIOR_ANALYST"
+        )
+        manager = User(
+            organization_id=org, username=f"pipe_mgr_{uuid4().hex[:6]}", password_hash="h", role="SUPER_ADMIN"
+        )
+        db.add_all([senior, manager])
+        db.flush()
+        manager_id = manager.id
+        senior_p = SimpleNamespace(user=senior, organization_id=org)
+        manager_p = SimpleNamespace(user=manager, organization_id=org)
+
+    # 2. Ingest 12 failed logins (triggers AEGIS-AUTH-001) + 1 privileged login (triggers AEGIS-AUTH-003)
+    # sharing host and source_ip so they correlate into a Storyline.
+    events = [
+        EventInput(
+            source="pipeline-live-src",
+            source_type="json",
+            collector="auth-collector",
+            source_sequence=f"auth-seq-{i}",
+            timestamp=datetime.now(UTC),
+            raw_event={
+                "message": f"Auth failed attempt {i}",
+                "host": "AUTH-SERVER-01",
+                "username": "victim-user",
+                "source_ip": "198.51.100.99",
+                "event_category": "authentication",
+                "action": "login",
+                "outcome": "failure",
+            },
+        )
+        for i in range(12)
+    ] + [
+        EventInput(
+            source="pipeline-live-src",
+            source_type="json",
+            collector="auth-collector",
+            source_sequence="auth-seq-priv",
+            timestamp=datetime.now(UTC),
+            raw_event={
+                "message": "Privileged login success after failure",
+                "host": "AUTH-SERVER-01",
+                "username": "victim-user",
+                "source_ip": "198.51.100.99",
+                "event_category": "authentication",
+                "action": "login",
+                "outcome": "success",
+                "authentication": {"privileged": True},
+            },
+        )
+    ]
+    with sessions.begin() as db:
+        ingest_res = ingest(db, settings, org, events, "e2e-live")
+        assert len(ingest_res["accepted"]) == 13
+
+    # 3. Worker process_once: detection, search indexing, and IOC observable extraction
+    for _ in range(10):
+        w = process_once(settings, sessions, storage)
+        i = index_once(settings, sessions)
+        if w == 0 and i == 0:
+            break
+
+    with sessions() as db:
+        alerts = list(db.scalars(select(Alert).where(Alert.organization_id == org)))
+        assert len(alerts) >= 2
+
+    # 4. Correlate alerts into Incident and Storyline
+    with sessions.begin() as db:
+        corr_res = correlate(db, settings, manager_p, 1800)
+        assert corr_res["changed"] >= 1
+        incident = db.scalar(
+            select(Incident).where(Incident.organization_id == org).order_by(Incident.created_at.desc())
+        )
+        assert incident is not None
+        incident_id = incident.id
+        storyline = db.scalar(select(Storyline).where(Storyline.organization_id == org))
+        assert storyline is not None
+
+    with sessions() as db:
+        observables = list(db.scalars(select(Observable).where(Observable.organization_id == org)))
+        assert any(o.value == "198.51.100.99" for o in observables)
+        entity = db.scalar(
+            select(Entity).where(Entity.organization_id == org, Entity.value == "AUTH-SERVER-01")
+        )
+        assert entity is not None
+        entity_id = entity.id
+
+    # 5. Create & trigger SOAR playbook with simulated containment action
+    with sessions.begin() as db:
+        book = Playbook(organization_id=org, name="Simulated Incident Response", enabled=True, version=1)
+        db.add(book)
+        db.flush()
+        db.add(
+            PlaybookVersion(
+                organization_id=org,
+                playbook_id=book.id,
+                version=1,
+                author=manager_p.user.id,
+                document={
+                    "description": "Simulated containment after approval",
+                    "trigger": {"source": "incident"},
+                    "input_schema": {"target_id": "entity"},
+                    "steps": [
+                        {"id": "contain", "action": "simulate_isolate_host"},
+                        {"id": "doc_note", "action": "incident_note"},
+                    ],
+                },
+            )
+        )
+        book_id = book.id
+
+    with sessions.begin() as db:
+        run = enqueue(
+            db,
+            settings,
+            senior_p,
+            book_id,
+            RunInput(
+                source_type="incident",
+                source_id=incident_id,
+                dry_run=False,
+                inputs={"target_id": entity_id},
+                idempotency_key="e2e-full-pipeline-run",
+            ),
+        )
+        run_id = run.id
+
+    # 6. Worker processes -> reaches approval gate
+    process_workflows(settings, sessions)
+    with sessions() as db:
+        run = db.get(WorkflowRun, run_id)
+        assert run.status == "WAITING_FOR_APPROVAL"
+
+    # 7. Human approval by supervisor (independent user)
+    with sessions.begin() as db:
+        run = db.get(WorkflowRun, run_id)
+        assert run.requested_by != manager_id
+        run.approved_by, run.approved_at, run.status = manager_id, time.time(), "QUEUED"
+        record(db, settings, run, "approve", manager_id)
+
+    # 8. Worker executes approved workflow to completion
+    for _ in range(5):
+        if process_workflows(settings, sessions) == 0:
+            break
+
+    with sessions() as db:
+        run = db.get(WorkflowRun, run_id)
+        assert run.status == "SUCCEEDED"
+        # Confirm simulated containment
+        assert run.history[0]["output"]["data"]["action"] == "simulate_isolate_host"
+        assert "Simulation only" in run.history[0]["output"]["data"]["message"]
+
+        # Confirm incident note
+        notes = list(
+            db.scalars(
+                select(CaseNote).where(CaseNote.organization_id == org, CaseNote.resource_id == incident_id)
+            )
+        )
+        assert len(notes) == 1
+        assert "No external containment performed" in notes[0].text
+
+        # Cryptographically verify audit log
+        assert verify_audit(db, settings, org) is True

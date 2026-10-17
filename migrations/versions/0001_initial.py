@@ -17,6 +17,10 @@ depends_on = None
 def upgrade():
     # Freeze the initial table set: later migrations exclusively own new tables.
     later_tables = {
+        "intel_observables", "intel_observable_events", "intel_enrichments", "intel_history",
+        "soar_playbooks",
+        "soar_versions",
+        "soar_runs",
         "search_jobs",
         "integrations",
         "notification_deliveries",

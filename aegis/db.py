@@ -1,7 +1,17 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, UniqueConstraint, create_engine, event
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    UniqueConstraint,
+    create_engine,
+    event,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 
@@ -76,6 +86,7 @@ class EventRecord(Owned, Base):
     # Durable source of truth until explicit retention; OpenSearch is a rebuildable search projection.
     payload: Mapped[dict] = mapped_column(JSON)
     state: Mapped[str] = mapped_column(String(20), default="PENDING", index=True)
+    intel_indexed: Mapped[bool] = mapped_column(default=False, index=True)
     attempts: Mapped[int] = mapped_column(default=0)
     available_at: Mapped[float] = mapped_column(default=0.0, index=True)
     last_error: Mapped[str | None] = mapped_column(String(100))
@@ -267,6 +278,57 @@ class IOCMatch(Base):
     event_id: Mapped[str] = mapped_column(ForeignKey("events_metadata.id"), primary_key=True)
 
 
+class Observable(Owned, Base):
+    """Observed artifacts, deliberately separate from curated threat indicators."""
+    __tablename__ = "intel_observables"
+    type: Mapped[str] = mapped_column(String(12))
+    value: Mapped[str] = mapped_column(String(2048))
+    normalized_key: Mapped[str] = mapped_column(String(64))
+    external_allowed: Mapped[bool]
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    __table_args__ = (UniqueConstraint("organization_id", "normalized_key"),
+                      UniqueConstraint("organization_id", "id"))
+
+
+class ObservableEvent(Owned, Base):
+    __tablename__ = "intel_observable_events"
+    observable_id: Mapped[str] = mapped_column(String(80))
+    event_id: Mapped[str] = mapped_column(ForeignKey("events_metadata.id", ondelete="CASCADE"), index=True)
+    __table_args__ = (
+        ForeignKeyConstraint(["organization_id", "observable_id"], ["intel_observables.organization_id", "intel_observables.id"]),
+        UniqueConstraint("organization_id", "observable_id", "event_id"),
+    )
+
+
+class Enrichment(Owned, Base):
+    __tablename__ = "intel_enrichments"
+    observable_id: Mapped[str] = mapped_column(String(80))
+    provider: Mapped[str] = mapped_column(String(30))
+    status: Mapped[str] = mapped_column(String(20), default="QUEUED")
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    attempts: Mapped[int] = mapped_column(default=0)
+    available_at: Mapped[float] = mapped_column(default=0.0)
+    lease_token: Mapped[str | None] = mapped_column(String(36))
+    lease_until: Mapped[float] = mapped_column(default=0.0)
+    enriched_at: Mapped[float | None]
+    expires_at: Mapped[float] = mapped_column(default=0.0)
+    __table_args__ = (
+        ForeignKeyConstraint(["organization_id", "observable_id"], ["intel_observables.organization_id", "intel_observables.id"]),
+        UniqueConstraint("organization_id", "observable_id", "provider"),
+        UniqueConstraint("organization_id", "id"),
+        Index("ix_intel_queue", "status", "available_at"),
+    )
+
+
+class EnrichmentHistory(Owned, Base):
+    __tablename__ = "intel_history"
+    enrichment_id: Mapped[str] = mapped_column(String(80), index=True)
+    status: Mapped[str] = mapped_column(String(20))
+    result: Mapped[dict] = mapped_column(JSON)
+    __table_args__ = (ForeignKeyConstraint(["organization_id", "enrichment_id"],
+                     ["intel_enrichments.organization_id", "intel_enrichments.id"]),)
+
+
 class Collector(Owned, Base):
     __tablename__ = "collectors"
     name: Mapped[str] = mapped_column(String(200))
@@ -296,6 +358,58 @@ class PlaybookExecution(Owned, Base):
     idempotency_key: Mapped[str] = mapped_column(String(64), unique=True)
     result: Mapped[dict] = mapped_column(JSON, default=dict)
     revision: Mapped[int] = mapped_column(default=1)
+
+
+class Playbook(Owned, Base):
+    __tablename__ = "soar_playbooks"
+    name: Mapped[str] = mapped_column(String(120))
+    version: Mapped[int] = mapped_column(default=1)
+    enabled: Mapped[bool] = mapped_column(default=False)
+    __table_args__ = (UniqueConstraint("organization_id", "name"),
+                      UniqueConstraint("organization_id", "id"))
+
+
+class PlaybookVersion(Owned, Base):
+    __tablename__ = "soar_versions"
+    playbook_id: Mapped[str] = mapped_column(String(80))
+    version: Mapped[int]
+    document: Mapped[dict] = mapped_column(JSON)
+    author: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    __table_args__ = (
+        ForeignKeyConstraint(["organization_id", "playbook_id"],
+                             ["soar_playbooks.organization_id", "soar_playbooks.id"]),
+        UniqueConstraint("organization_id", "playbook_id", "version"),
+    )
+
+
+class WorkflowRun(Owned, Base):
+    __tablename__ = "soar_runs"
+    playbook_id: Mapped[str] = mapped_column(String(80))
+    version: Mapped[int]
+    requested_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    source_type: Mapped[str] = mapped_column(String(20))
+    source_id: Mapped[str] = mapped_column(String(80))
+    dry_run: Mapped[bool]
+    status: Mapped[str] = mapped_column(String(30), default="QUEUED")
+    idempotency_key: Mapped[str] = mapped_column(String(64))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    context: Mapped[dict] = mapped_column(JSON)
+    history: Mapped[list] = mapped_column(JSON, default=list)
+    cursor: Mapped[int] = mapped_column(default=0)
+    attempts: Mapped[int] = mapped_column(default=0)
+    available_at: Mapped[float] = mapped_column(default=0.0)
+    deadline: Mapped[float]
+    started_at: Mapped[float | None]
+    completed_at: Mapped[float | None]
+    approved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    approved_at: Mapped[float | None]
+    __table_args__ = (
+        ForeignKeyConstraint(["organization_id", "playbook_id", "version"],
+            ["soar_versions.organization_id", "soar_versions.playbook_id", "soar_versions.version"]),
+        UniqueConstraint("organization_id", "idempotency_key"),
+        UniqueConstraint("organization_id", "playbook_id", "version", "source_type", "source_id", "dry_run"),
+        Index("ix_soar_queue", "status", "available_at"),
+    )
 
 
 class Notification(Owned, Base):
