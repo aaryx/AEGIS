@@ -154,3 +154,81 @@ def test_incident_updates_are_versioned_and_transactional(system):
     assert client.patch(path, json={"status": "TRIAGED", "revision": 1}).status_code == 200
     assert client.patch(path, json={"status": "INVESTIGATING", "revision": 1}).status_code == 409
     assert client.patch(path, json={"status": "INVESTIGATING", "revision": 2}).status_code == 200
+
+
+def test_incident_selection_collision_regression(system):
+    """Regression test reproducing the incident-selection collision.
+
+    When a synthetic storyline incident (lacking raw evidence and IOC records)
+    coexists with an attack-chain incident, naive `select(Incident)` can select
+    the storyline incident, causing investigation join assertions to fail.
+    Deterministic selection targeting the simulated attack-chain incident resolves the collision.
+    """
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from aegis.db import Alert, Entity, Incident
+    from aegis.investigation import investigate
+    from aegis.storylines import correlate
+    from scripts.integration_checks import select_attack_chain_incident
+
+    org_id = system["org"]
+
+    # 1. Create a synthetic storyline incident first (simulating the storyline test run)
+    with system["app"].state.sessions.begin() as db:
+        story_entity = Entity(organization_id=org_id, type="host", value="collision-host")
+        db.add(story_entity)
+        db.flush()
+        for i in range(2):
+            alert_id = f"ALT-collision-{i}"
+            db.add(
+                Alert(
+                    id=alert_id,
+                    organization_id=org_id,
+                    title="Synthetic detection",
+                    severity="high",
+                    rule_id="test-collision",
+                    rule_version=1,
+                    fingerprint=f"fp-collision-{i}",
+                    correlation_key=f"corr-collision-{i}",
+                    confidence=80,
+                    risk_score=70,
+                    risk_factors={},
+                    explanation={},
+                    mitre_techniques=[],
+                    entity_ids=[story_entity.id],
+                    first_seen=datetime.now(UTC),
+                    last_seen=datetime.now(UTC),
+                )
+            )
+        db.flush()
+        principal = SimpleNamespace(
+            organization_id=org_id, user=SimpleNamespace(id=system["users"]["SUPER_ADMIN"].id)
+        )
+        correlate(db, system["settings"], principal, 1800)
+
+    # 2. Simulate the attack-chain incident (as acceptance testing does)
+    events = attack_chain(system)
+
+    with system["app"].state.sessions() as db:
+        # 3. Reproduce collision: unconstrained/first-row selection returns the storyline incident
+        first_incident = db.scalar(select(Incident).order_by(Incident.created_at.asc()))
+        assert first_incident is not None
+        assert first_incident.title.startswith("Attack storyline:")
+        first_result = investigate(db, first_incident.organization_id, first_incident.id)
+        # Reproduce the exact CI failure: storyline incident lacks evidence and IOCs
+        assert not first_result["evidence"] or not first_result["iocs"]
+
+        # 4. Verify fix: deterministic selection targets the simulated attack-chain incident
+        selected = select_attack_chain_incident(db)
+        assert selected is not None
+        assert selected.id != first_incident.id
+        assert selected.title == "Potential account compromise"
+        assert selected.organization_id == org_id
+
+        # Preserved evidence and IOC assertions succeed on the attack-chain incident
+        result = investigate(db, selected.organization_id, selected.id)
+        assert result["evidence"], "Attack-chain incident must contain evidence records"
+        assert len(result["evidence"]) == len(events)
+        assert result["iocs"], "Attack-chain incident must contain IOC records"
+        assert len(result["iocs"]) >= 1
