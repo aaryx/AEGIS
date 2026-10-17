@@ -4,10 +4,10 @@ Assessment date: 2026-10-17. This is a bounded engineering assessment, not a
 production-readiness certification. No production database, credentials, or
 external attack target was used.
 
-Tested implementation commit: `a71939483421570c9c1db00db9ba4a90a3402b3e`.
-The following evidence-only commit normalizes artifact whitespace and records
-this SHA; it does not change application or test behavior. Source-file SHA-256
-digests are also preserved in `validation/cerberus/results.json`.
+Tested implementation commit: `37db897654b8d17d075e9a13a755df145d77f13c`.
+This commit builds on prior Cerberus fixes (`a71939483421570c9c1db00db9ba4a90a3402b3e`),
+resolving acceptance drill race conditions and incomplete investigation polling (CER-05).
+Source-file SHA-256 digests are preserved in `validation/cerberus/results.json`.
 
 ## Ground truth and environment
 
