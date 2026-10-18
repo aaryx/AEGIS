@@ -2,7 +2,10 @@
 
 Zero-skip policy: fails if any integration test is skipped or fails.
 Never prints or leaks credentials.
+Guarantees database test safety by targeting exclusively isolated test databases (e.g., aegis_test).
 """
+
+from __future__ import annotations
 
 import os
 import re
@@ -12,7 +15,14 @@ import sys
 import time
 from pathlib import Path
 
+from alembic import command
+from alembic.config import Config
 from dotenv import dotenv_values
+
+from aegis.db_safety import (
+    ensure_isolated_test_database,
+    validate_test_database_url,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -36,6 +46,7 @@ MANDATORY_INTEGRATION_TESTS = {
     "test_postgres_concurrent_rule_activation_and_replay",
     # Distributed Services Suite (tests/test_integration.py)
     "test_real_dependency_connectivity",
+    "test_real_redis_queue_semantics_and_delivery",
 }
 
 
@@ -49,6 +60,20 @@ def wait_for_port(host: str, port: int, timeout_seconds: int = 30) -> bool:
         except (OSError, TimeoutError):
             time.sleep(1)
     return False
+
+
+def prepare_test_database(test_url: str, admin_url: str, test_db_name: str) -> None:
+    """Validate, auto-provision, and apply schema migrations to the dedicated test database."""
+    print(f"Verifying database safety invariants for test database '{test_db_name}'...")
+    validate_test_database_url(test_url, environment="testing")
+
+    print(f"Ensuring isolated test database '{test_db_name}' exists...")
+    ensure_isolated_test_database(admin_url, test_db_name)
+
+    print(f"Applying schema migrations deterministically to '{test_db_name}'...")
+    alembic_cfg = Config(str(ROOT / "alembic.ini"))
+    alembic_cfg.set_main_option("sqlalchemy.url", test_url)
+    command.upgrade(alembic_cfg, "head")
 
 
 def main() -> None:
@@ -86,12 +111,27 @@ def main() -> None:
             sys.exit(1)
         print(f"  -> {name} is reachable on {host}:{port}.")
 
-    # 2. Build sanitized execution environment for integration test suite
+    # 2. Database Isolation: Explicitly target dedicated test database (never normal app DB)
+    test_db_name = os.environ.get("AEGIS_POSTGRES_TEST_DB", "aegis_test")
+    test_pg_url = f"postgresql+psycopg://aegis:{postgres_pass}@127.0.0.1:5432/{test_db_name}"
+    admin_pg_url = f"postgresql://aegis:{postgres_pass}@127.0.0.1:5432/postgres"
+
+    try:
+        prepare_test_database(test_pg_url, admin_pg_url, test_db_name)
+    except Exception as exc:
+        err_msg = str(exc)
+        if postgres_pass:
+            err_msg = err_msg.replace(postgres_pass, "******")
+        print(f"RELEASE GATE FAILED: Test database preparation error: {type(exc).__name__}: {err_msg}", file=sys.stderr)
+        sys.exit(1)
+
+    # 3. Build sanitized execution environment for integration test suite
     test_env = os.environ.copy()
     test_env.update(
         {
-            "AEGIS_POSTGRES_TEST_URL": f"postgresql+psycopg://aegis:{postgres_pass}@127.0.0.1:5432/aegis",
-            "DATABASE_URL": f"postgresql+psycopg://aegis:{postgres_pass}@127.0.0.1:5432/aegis",
+            "AEGIS_POSTGRES_TEST_URL": test_pg_url,
+            "DATABASE_URL": test_pg_url,
+            "ENVIRONMENT": "testing",
             "REDIS_URL": f"redis://:{redis_pass}@127.0.0.1:6379/0",
             "OPENSEARCH_URL": "http://127.0.0.1:9200",
             "OPENSEARCH_USERNAME": "aegis",
@@ -101,12 +141,13 @@ def main() -> None:
         }
     )
 
-    # 3. Execute PostgreSQL concurrency and distributed connectivity test suites
+    # 4. Execute PostgreSQL concurrency and distributed connectivity test suites
     print("\n=== CI Release Gate: Executing Mandatory Integration Suites ===")
     cmd = [
         sys.executable,
         "-m",
         "pytest",
+        "tests/test_database_safety.py",
         "tests/test_postgres_integration.py",
         "tests/test_integration.py",
         "-v",
@@ -126,15 +167,21 @@ def main() -> None:
     output_lines: list[str] = []
     assert process.stdout is not None
     for line in iter(process.stdout.readline, ""):
-        output_lines.append(line)
-        sys.stdout.write(line)
+        sanitized_line = line
+        if postgres_pass:
+            sanitized_line = sanitized_line.replace(postgres_pass, "******")
+        if redis_pass:
+            sanitized_line = sanitized_line.replace(redis_pass, "******")
+        if opensearch_pass:
+            sanitized_line = sanitized_line.replace(opensearch_pass, "******")
+        output_lines.append(sanitized_line)
+        sys.stdout.write(sanitized_line)
         sys.stdout.flush()
 
     process.wait()
     full_output = "".join(output_lines)
 
-    # 4. Enforce strict Zero-Skip policy
-    # Match patterns like: "13 passed in 12.34s" or "12 passed, 1 skipped in ..."
+    # 5. Enforce strict Zero-Skip policy
     summary_match = re.search(r"=+\s*(.+?)\s*in\s+[\d\.]+", full_output)
     if not summary_match:
         print(
@@ -192,7 +239,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # 5. Explicitly verify every single mandatory integration test by name was executed and PASSED
+    # 6. Explicitly verify every single mandatory integration test by name was executed and PASSED
     passed_test_names = set(re.findall(r"::(\w+(?:\[[^\]\r\n]+\])?)\s+PASSED", full_output))
     missing_tests = MANDATORY_INTEGRATION_TESTS - passed_test_names
     if missing_tests:

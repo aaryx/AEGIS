@@ -43,6 +43,7 @@ from aegis.worker import process_once
 def get_current_rss_mb() -> float:
     try:
         import resource
+
         return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
     except ImportError:
         pass
@@ -78,9 +79,13 @@ def get_current_rss_mb() -> float:
 def main() -> int:
     parser = argparse.ArgumentParser(description="AEGIS Concurrency and Stress Benchmark")
     parser.add_argument("--events", type=int, default=2000, help="Total events to generate (default: 2000)")
-    parser.add_argument("--batch-size", type=int, default=50, help="Batch size per ingest request (default: 50)")
+    parser.add_argument(
+        "--batch-size", type=int, default=50, help="Batch size per ingest request (default: 50)"
+    )
     parser.add_argument("--concurrency", type=int, default=4, help="Concurrent client workers (default: 4)")
-    parser.add_argument("--database-url", type=str, default=None, help="Database URL (default: from env or SQLite)")
+    parser.add_argument(
+        "--database-url", type=str, default=None, help="Database URL (default: from env or SQLite)"
+    )
     parser.add_argument("--json", action="store_true", help="Output only JSON results")
     args = parser.parse_args()
 
@@ -97,6 +102,19 @@ def main() -> int:
         audit_secret="benchmark-secret-audit-key-32chars-min",  # noqa: S106
         _env_file=None,
     )
+
+    default_sqlite = "./local-data/bench_temp.db"
+    if (
+        not args.database_url
+        and not os.environ.get("AEGIS_POSTGRES_TEST_URL")
+        and not os.environ.get("DATABASE_URL")
+    ):
+        temp_path = Path(default_sqlite)
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
 
     engine, session_factory = database(settings.database_url)
     Base.metadata.create_all(engine)
@@ -218,38 +236,63 @@ def main() -> int:
 
     # 4. Database Reconciliation Accounting
     with session_factory() as db:
-        persisted_records = db.scalar(
-            select(func.count()).select_from(EventRecord).where(
-                EventRecord.organization_id == org_id,
-                EventRecord.source == source_id,
+        persisted_records = (
+            db.scalar(
+                select(func.count())
+                .select_from(EventRecord)
+                .where(
+                    EventRecord.organization_id == org_id,
+                    EventRecord.source == source_id,
+                )
             )
-        ) or 0
-        processed_records = db.scalar(
-            select(func.count()).select_from(EventRecord).where(
-                EventRecord.organization_id == org_id,
-                EventRecord.source == source_id,
-                EventRecord.state == "PROCESSED",
+            or 0
+        )
+        processed_records = (
+            db.scalar(
+                select(func.count())
+                .select_from(EventRecord)
+                .where(
+                    EventRecord.organization_id == org_id,
+                    EventRecord.source == source_id,
+                    EventRecord.state == "PROCESSED",
+                )
             )
-        ) or 0
-        pending_records = db.scalar(
-            select(func.count()).select_from(EventRecord).where(
-                EventRecord.organization_id == org_id,
-                EventRecord.source == source_id,
-                EventRecord.state.in_(["PENDING", "RETRY"]),
+            or 0
+        )
+        pending_records = (
+            db.scalar(
+                select(func.count())
+                .select_from(EventRecord)
+                .where(
+                    EventRecord.organization_id == org_id,
+                    EventRecord.source == source_id,
+                    EventRecord.state.in_(["PENDING", "RETRY"]),
+                )
             )
-        ) or 0
-        dead_records = db.scalar(
-            select(func.count()).select_from(EventRecord).where(
-                EventRecord.organization_id == org_id,
-                EventRecord.source == source_id,
-                EventRecord.state == "DEAD",
+            or 0
+        )
+        dead_records = (
+            db.scalar(
+                select(func.count())
+                .select_from(EventRecord)
+                .where(
+                    EventRecord.organization_id == org_id,
+                    EventRecord.source == source_id,
+                    EventRecord.state == "DEAD",
+                )
             )
-        ) or 0
-        generated_alerts = db.scalar(
-            select(func.count()).select_from(Alert).where(
-                Alert.organization_id == org_id,
+            or 0
+        )
+        generated_alerts = (
+            db.scalar(
+                select(func.count())
+                .select_from(Alert)
+                .where(
+                    Alert.organization_id == org_id,
+                )
             )
-        ) or 0
+            or 0
+        )
 
     # Calculate reconciliation: submitted vs persisted vs processed
     # Discrepancy is actual event loss
@@ -292,11 +335,17 @@ def main() -> int:
         },
         "throughput_metrics": {
             "ingestion_duration_seconds": round(ingest_duration, 4),
-            "ingestion_events_per_second": round(total_accepted / ingest_duration, 2) if ingest_duration else 0.0,
+            "ingestion_events_per_second": round(total_accepted / ingest_duration, 2)
+            if ingest_duration
+            else 0.0,
             "detection_duration_seconds": round(worker_duration, 4),
-            "detection_events_per_second": round(total_processed / worker_duration, 2) if worker_duration else 0.0,
+            "detection_events_per_second": round(total_processed / worker_duration, 2)
+            if worker_duration
+            else 0.0,
             "end_to_end_duration_seconds": round(total_e2e_duration, 4),
-            "end_to_end_events_per_second": round(args.events / total_e2e_duration, 2) if total_e2e_duration else 0.0,
+            "end_to_end_events_per_second": round(args.events / total_e2e_duration, 2)
+            if total_e2e_duration
+            else 0.0,
         },
         "latency_percentiles_seconds": {
             "p50_median": round(p50, 4),
@@ -341,7 +390,9 @@ def main() -> int:
     else:
         print(f"[*] Ingestion Throughput:  {report['throughput_metrics']['ingestion_events_per_second']} EPS")
         print(f"[*] Detection Worker Rate: {report['throughput_metrics']['detection_events_per_second']} EPS")
-        print(f"[*] Batch Latency p50:     {report['latency_percentiles_seconds']['p50_median'] * 1000:.1f} ms")
+        print(
+            f"[*] Batch Latency p50:     {report['latency_percentiles_seconds']['p50_median'] * 1000:.1f} ms"
+        )
         print(f"[*] Batch Latency p95:     {report['latency_percentiles_seconds']['p95'] * 1000:.1f} ms")
         print(f"[*] Batch Latency p99:     {report['latency_percentiles_seconds']['p99'] * 1000:.1f} ms")
         print(f"[*] Alerts Generated:      {generated_alerts}")
@@ -357,4 +408,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

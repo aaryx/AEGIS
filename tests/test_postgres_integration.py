@@ -33,6 +33,7 @@ from aegis.db import (
     User,
     WindowState,
 )
+from aegis.db_safety import validate_test_database_url
 from aegis.detection import SQLState
 from aegis.parsers import digest
 from aegis.pipeline import detect_batch, ingest, seed_rules
@@ -50,6 +51,8 @@ def pg_engine():
     """Verify connectivity to isolated PostgreSQL test instance."""
     if not POSTGRES_TEST_URL:
         pytest.skip("AEGIS_POSTGRES_TEST_URL environment variable not configured")
+    # Strictly validate that POSTGRES_TEST_URL points to an isolated test database
+    validate_test_database_url(POSTGRES_TEST_URL, environment=os.environ.get("ENVIRONMENT", "testing"))
     try:
         engine = create_engine(POSTGRES_TEST_URL, pool_pre_ping=True, connect_args={"connect_timeout": 3})
         with engine.connect() as conn:
@@ -57,7 +60,14 @@ def pg_engine():
             if val != 1:
                 pytest.skip("PostgreSQL test instance not responsive")
     except Exception as exc:
-        pytest.skip(f"PostgreSQL test instance unavailable at {POSTGRES_TEST_URL}: {exc}")
+        try:
+            from sqlalchemy.engine import make_url
+
+            parsed = make_url(POSTGRES_TEST_URL)
+            target = f"{parsed.host}:{parsed.port}/{parsed.database}"
+        except Exception:
+            target = "configured host"
+        pytest.skip(f"PostgreSQL test instance unavailable at {target} ({type(exc).__name__})")
 
     # Ensure schema tables exist
     Base.metadata.create_all(engine)
@@ -701,7 +711,7 @@ def test_postgres_schema_migration_previous_to_current(pg_engine):
 
     root = Path(__file__).resolve().parents[1]
     cfg = Config(str(root / "alembic.ini"))
-    mig_db_name = f"aegis_mig_{uuid4().hex[:8]}"
+    mig_db_name = f"aegis_test_mig_{uuid4().hex[:8]}"
 
     from sqlalchemy.engine import make_url
 

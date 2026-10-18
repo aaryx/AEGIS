@@ -1,0 +1,6 @@
+============================== warnings summary ===============================
+.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using httpx with starlette.testclient is deprecated
+.venv\Lib\site-packages\typer\__init__.py:24: DeprecationWarning: click.utils.get_binary_stream is deprecated
+.venv\Lib\site-packages\typer\__init__.py:25: DeprecationWarning: click.utils.get_text_stream is deprecated
+
+495 passed, 27 skipped, 3 warnings in 216.22s (0:03:36)

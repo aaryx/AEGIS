@@ -75,7 +75,8 @@ def output(ctx: typer.Context, value, csv_output=False):
         ][:7]
         table = Table(*columns)
         for row in rows:
-            table.add_row(*(str(row.get(key, ""))[:90] for key in columns))
+            table.add_row(*(str(row.get("containment_status", row.get(key, "")) if key == "status"
+                                else row.get(key, ""))[:90] for key in columns))
         Console().print(table)
         if value.get("next_cursor"):
             console.print(f"Next cursor: {value['next_cursor']}")
@@ -890,6 +891,9 @@ def run_agent(
     once: bool = typer.Option(False, "--once", help="Run single heartbeat/execution cycle and exit"),
     live: bool = typer.Option(False, "--live", help="Enable live OS firewall/process modifications instead of safe simulation"),
     controller_ip: str = typer.Option("127.0.0.1", "--controller-ip", help="AEGIS controller IP allowed through firewall"),
+    allow_network_policy: bool = typer.Option(False, "--allow-network-policy", help="Authorize AEGIS-owned Linux host drop policy; requires isolated qualification"),
+    key_path: str | None = typer.Option(None, "--key-path", help="Persistent endpoint signing key"),
+    controller_public_key: str | None = typer.Option(None, "--controller-public-key", help="Pinned controller public key"),
 ):
     from aegis.agent import EndpointAgent
 
@@ -901,6 +905,9 @@ def run_agent(
         token=target_token,
         controller_ip=controller_ip,
         simulation_mode=not live,
+        allow_network_policy=allow_network_policy,
+        key_path=key_path,
+        controller_public_key=controller_public_key,
     )
     try:
         if once:

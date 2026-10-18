@@ -5,6 +5,8 @@ import hmac
 import io
 import json
 import logging
+import math
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -17,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from prometheus_client import generate_latest
 from pydantic import Field
 from redis import Redis
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from aegis import __version__
@@ -62,6 +64,7 @@ from aegis.db import (
     SessionToken,
     Storyline,
     User,
+    WindowState,
     WorkerHeartbeat,
     as_dict,
     database,
@@ -131,6 +134,7 @@ INCIDENT_STATUSES = [
     "RESOLVED",
     "CLOSED",
 ]
+CASE_STATUSES = {"OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"}
 RESOURCES: dict[str, Any] = {
     "alerts": Alert,
     "incidents": Incident,
@@ -1152,7 +1156,11 @@ def create_app(settings: Settings | None = None):
             raise HTTPException(404, "Resource does not exist")
         if row.revision != data.revision:
             raise HTTPException(409, "Resource changed; reload before updating")
-        valid = ALERT_STATUSES if resource == "alerts" else set(INCIDENT_STATUSES)
+        valid = (
+            ALERT_STATUSES
+            if resource == "alerts"
+            else (CASE_STATUSES if resource == "cases" else set(INCIDENT_STATUSES))
+        )
         if data.status not in valid:
             raise HTTPException(422, "Invalid workflow status")
         if (
@@ -1813,6 +1821,8 @@ def create_app(settings: Settings | None = None):
         principal=Depends(require("playbooks.approve")),
         db=Depends(db_session),
     ):
+        from aegis.soar import lock_tenant
+        lock_tenant(db, principal.organization_id)
         row = db.scalar(
             select(PlaybookExecution)
             .where(
@@ -2023,6 +2033,9 @@ def create_app(settings: Settings | None = None):
         principal=Depends(require("agents.poll", "agents.receipt")),
         db=Depends(db_session),
     ):
+        from aegis.soar import lock_tenant
+        lock_tenant(db, principal.organization_id)
+        db.expire_all()
         agent = db.scalar(
             select(Agent).where(
                 Agent.organization_id == principal.organization_id,
@@ -2033,6 +2046,13 @@ def create_app(settings: Settings | None = None):
             raise HTTPException(404, "Enrolled agent not found")
         if principal.agent and principal.agent.id != agent.id:
             raise HTTPException(403, "Agent not authorized to rotate keys for another endpoint")
+
+        if not ed25519_verify_canonical(
+            agent.public_key,
+            data.rotation_signature,
+            {"name": name, "new_public_key": data.new_public_key},
+        ):
+            raise HTTPException(400, "Invalid cryptographic key rotation signature")
 
         agent.public_key = data.new_public_key
         audit(
@@ -2056,6 +2076,9 @@ def create_app(settings: Settings | None = None):
         principal=Depends(require("agents.revoke")),
         db=Depends(db_session),
     ):
+        from aegis.soar import lock_tenant
+        lock_tenant(db, principal.organization_id)
+        db.expire_all()
         agent = db.scalar(
             select(Agent).where(
                 Agent.organization_id == principal.organization_id,
@@ -2066,6 +2089,52 @@ def create_app(settings: Settings | None = None):
             raise HTTPException(404, "Agent not found")
         agent.status = "REVOKED"
         agent.revoked_at = now()
+
+        # Cancel all in-flight executions targeting the revoked agent
+        target_entity = db.scalar(
+            select(Entity.id).where(
+                Entity.organization_id == principal.organization_id,
+                Entity.type == "host",
+                Entity.value == name,
+            )
+        )
+        target_ids = {name}
+        if target_entity:
+            target_ids.add(target_entity)
+
+        pending_executions = list(
+            db.scalars(
+                select(PlaybookExecution)
+                .where(
+                    PlaybookExecution.organization_id == principal.organization_id,
+                    PlaybookExecution.target.in_(target_ids),
+                    PlaybookExecution.status.in_(["REQUESTED", "APPROVED", "DISPATCHED", "EXECUTING"]),
+                )
+                .with_for_update()
+            )
+        )
+        for exec_row in pending_executions:
+            exec_row.status = "CANCELLED"
+            res = dict(exec_row.result or {})
+            res.update({
+                "cancelled_at": now().isoformat(),
+                "error": "Agent identity was revoked prior to execution",
+                "containment_status": "UNKNOWN",
+                "enforced_externally": False,
+            })
+            exec_row.result = res
+            exec_row.revision += 1
+            audit(
+                db,
+                settings,
+                principal.organization_id,
+                principal.user.id,
+                "playbooks.cancel",
+                exec_row.id,
+                details={"reason": f"Agent {name} revoked: {data.reason}", "containment_status": "UNKNOWN"},
+                request=request,
+            )
+
         audit(
             db,
             settings,
@@ -2083,11 +2152,18 @@ def create_app(settings: Settings | None = None):
     def agent_heartbeat(
         data: AgentHeartbeatInput,
         request: Request,
-        principal=Depends(require("collectors.read")),
+        principal=Depends(authenticate),
         db=Depends(db_session),
     ):
+        if "agents.heartbeat" not in principal.permissions and "collectors.read" not in principal.permissions:
+            raise HTTPException(403, "Permission denied")
+        if principal.agent is not None and (principal.agent.name != data.name or principal.agent.status != "ENROLLED"):
+            raise HTTPException(403, "Agent not authorized to heartbeat for another endpoint")
+
         rate_limit(request, f"agent:{data.name}", 60)
         from aegis.db import Collector, Entity, now
+        from aegis.soar import lock_tenant
+        lock_tenant(db, principal.organization_id)
 
         # Update Agent table if registered
         agent_row = db.scalar(
@@ -2100,13 +2176,17 @@ def create_app(settings: Settings | None = None):
             if agent_row.status == "REVOKED":
                 raise HTTPException(403, "Agent identity is revoked")
             agent_row.last_heartbeat = now()
-            agent_row.isolation_status = data.isolation_status
+            # Heartbeat is unsigned posture, never proof of enforcement.
+            if data.isolation_status != agent_row.isolation_status:
+                agent_row.isolation_status = "UNKNOWN"
             agent_row.ip = data.ip
             agent_row.version = data.version
             agent_row.capabilities = data.capabilities
-            if data.public_key:
-                agent_row.public_key = data.public_key
+            if data.public_key and data.public_key != agent_row.public_key:
+                raise HTTPException(409, "Use authenticated key rotation")
         elif data.public_key:
+            if "agents.enroll" not in principal.permissions:
+                raise HTTPException(403, "Agent enrollment permission required")
             agent_row = Agent(
                 organization_id=principal.organization_id,
                 name=data.name,
@@ -2116,7 +2196,7 @@ def create_app(settings: Settings | None = None):
                 os=data.os,
                 ip=data.ip,
                 capabilities=data.capabilities,
-                isolation_status=data.isolation_status,
+                isolation_status="UNKNOWN",
                 last_heartbeat=now(),
             )
             db.add(agent_row)
@@ -2167,7 +2247,8 @@ def create_app(settings: Settings | None = None):
             "agent_version": data.version,
             "os": data.os,
             "ip": data.ip,
-            "isolation_status": data.isolation_status,
+            "isolation_status": agent_row.isolation_status if agent_row else "UNKNOWN",
+            "reported_isolation_status": data.isolation_status,
             "capabilities": data.capabilities,
             "last_heartbeat": now().isoformat(),
         }
@@ -2180,7 +2261,7 @@ def create_app(settings: Settings | None = None):
             principal.user.id,
             "agents.heartbeat",
             collector.id,
-            details={"name": data.name, "status": data.status, "isolation_status": data.isolation_status},
+            details={"name": data.name, "status": data.status, "isolation_status": agent_row.isolation_status if agent_row else "UNKNOWN"},
             request=request,
         )
         db.commit()
@@ -2188,21 +2269,27 @@ def create_app(settings: Settings | None = None):
             "status": "ok",
             "collector_id": collector.id,
             "entity_id": entity.id,
+            "agent_id": agent_row.id if agent_row else None,
             "name": data.name,
-            "isolation_status": data.isolation_status,
+            "isolation_status": agent_row.isolation_status if agent_row else "UNKNOWN",
             "timestamp": now().isoformat(),
         }
 
     @app.get(PREFIX + "/agents/{name}/commands", tags=["agents"])
     def agent_commands(
         name: str,
-        principal=Depends(require("playbooks.read")),
+        principal=Depends(authenticate),
         db=Depends(db_session),
     ):
+        if "agents.poll" not in principal.permissions and "playbooks.read" not in principal.permissions:
+            raise HTTPException(403, "Permission denied")
         # Enforce agent-to-host authorization
         if principal.agent is not None:
             if principal.agent.name != name or principal.agent.status != "ENROLLED":
                 raise HTTPException(403, "Agent not authorized for this host")
+
+        from aegis.soar import lock_tenant
+        lock_tenant(db, principal.organization_id)
 
         entity = db.scalar(
             select(Entity).where(
@@ -2223,7 +2310,8 @@ def create_app(settings: Settings | None = None):
                     PlaybookExecution.status.in_(["APPROVED", "DISPATCHED"]),
                     PlaybookExecution.target.in_(target_ids),
                 )
-                .order_by(PlaybookExecution.created_at.asc())
+                .order_by((PlaybookExecution.status == "DISPATCHED").desc(), PlaybookExecution.created_at.asc())
+                .limit(1)
             )
         )
 
@@ -2231,15 +2319,19 @@ def create_app(settings: Settings | None = None):
             select(Agent).where(
                 Agent.organization_id == principal.organization_id,
                 Agent.name == name,
-            )
+            ).with_for_update()
         )
-        agent_id = agent.id if agent else name
+        if not agent or agent.status != "ENROLLED":
+            raise HTTPException(403, "Agent identity is not enrolled or is revoked")
+        agent_id = agent.id
 
         ctrl_priv = get_controller_signing_key(settings)
         ctrl_pub = get_controller_public_key_hex(settings)
 
         results = []
         for execution in executions:
+            # Polling must not bypass dispatch authorization or approval expiry.
+            execute(db, settings, principal, execution.id)
             res_dict = dict(execution.result or {})
             envelope = res_dict.get("command_envelope")
             ctrl_sig = res_dict.get("controller_signature")
@@ -2252,7 +2344,7 @@ def create_app(settings: Settings | None = None):
                     "action": execution.action,
                     "parameters": res_dict.get("params", {}),
                     "issued_at": time.time(),
-                    "expires_at": time.time() + 300.0,
+                    "expires_at": time.time() + float(getattr(settings, "response_approval_seconds", 3600)),
                     "nonce": secrets.token_hex(16),
                 }
                 ctrl_sig = ed25519_sign_canonical(ctrl_priv, envelope)
@@ -2280,24 +2372,32 @@ def create_app(settings: Settings | None = None):
         name: str,
         data: AgentReceiptInput,
         request: Request,
-        principal=Depends(require("playbooks.execute")),
+        principal=Depends(authenticate),
         db=Depends(db_session),
     ):
+        if "agents.receipt" not in principal.permissions and "playbooks.execute" not in principal.permissions:
+            raise HTTPException(403, "Permission denied")
+
         rate_limit(request, f"receipt:{data.command_id}", 30)
 
+        from aegis.soar import lock_tenant
+        lock_tenant(db, principal.organization_id)
+        db.expire_all()
         # Enforce agent-to-host authorization
         if principal.agent is not None:
             if principal.agent.name != name or principal.agent.status != "ENROLLED":
                 raise HTTPException(403, "Agent not authorized to submit receipts for this host")
 
         agent = db.scalar(
-            select(Agent).where(
+            select(Agent)
+            .where(
                 Agent.organization_id == principal.organization_id,
                 Agent.name == name,
             )
+            .with_for_update()
         )
-        if agent and agent.status == "REVOKED":
-            raise HTTPException(403, "Agent identity is revoked")
+        if not agent or agent.status != "ENROLLED":
+            raise HTTPException(403, "Agent identity is not enrolled or is revoked")
 
         execution = db.scalar(
             select(PlaybookExecution)
@@ -2314,86 +2414,171 @@ def create_app(settings: Settings | None = None):
         if execution.action != data.action:
             raise HTTPException(409, "Receipt action does not match execution command")
 
-        # Cryptographic verification
-        if data.receipt and data.signature:
-            if not agent:
-                raise HTTPException(400, "Endpoint agent not registered with public key")
-            # Verify Ed25519 signature
-            if not ed25519_verify_canonical(agent.public_key, data.signature, data.receipt):
-                raise HTTPException(400, "Cryptographic execution receipt signature verification failed")
+        target = db.scalar(
+            select(Entity).where(
+                Entity.organization_id == principal.organization_id,
+                Entity.type == "host",
+                Entity.value == name,
+            )
+        )
+        if execution.target not in {name, target.id if target else None}:
+            raise HTTPException(403, "Command is not assigned to this endpoint")
 
-            # Verify cryptographic binding to command and scope
-            receipt_cmd_id = data.receipt.get("command_id")
-            receipt_action = data.receipt.get("action")
-            receipt_agent = data.receipt.get("agent_id")
-            if receipt_cmd_id != execution.id:
-                raise HTTPException(400, "Receipt command ID does not match execution")
-            if receipt_action != execution.action:
-                raise HTTPException(400, "Receipt action does not match execution")
-            if receipt_agent and receipt_agent != agent.id and receipt_agent != name:
-                raise HTTPException(400, "Receipt agent ID does not match enrolled agent")
+        cmd_envelope = (execution.result or {}).get("command_envelope") or {}
+        cmd_expires_at = cmd_envelope.get("expires_at")
+        if cmd_expires_at and time.time() > float(cmd_expires_at):
+            execution.status = "EXPIRED"
+            res = dict(execution.result or {})
+            res["expired_at"] = now().isoformat()
+            res["error"] = "Command expired prior to receipt submission"
+            execution.result = res
+            audit(db, settings, principal.organization_id, principal.user.id,
+                  "playbooks.expired", execution.id,
+                  details={"containment_status": "UNKNOWN", "enforced_externally": False}, request=request)
+            db.commit()
+            raise HTTPException(409, "Command execution has expired")
 
-            expected_ctrl_sig = (execution.result or {}).get("controller_signature")
-            receipt_ctrl_sig = data.receipt.get("command_signature")
-            if expected_ctrl_sig and receipt_ctrl_sig and receipt_ctrl_sig != expected_ctrl_sig:
-                raise HTTPException(400, "Receipt is not bound to the dispatched controller command")
-        elif data.receipt_hash:
-            expected_payload = {
-                "command_id": data.command_id,
-                "agent": name,
-                "action": data.action,
-                "status": data.status,
-                "result": data.details,
-            }
-            expected_hash = hashlib.sha256(canonical(expected_payload).encode()).hexdigest()
-            if not hmac.compare_digest(expected_hash, data.receipt_hash):
+        # Cryptographic verification: require authentic Ed25519 signature from enrolled agent
+        if not (data.receipt and data.signature):
+            raise HTTPException(400, "Cryptographic Ed25519 execution receipt and signature required")
+
+        if not agent or not agent.public_key:
+            raise HTTPException(400, "Endpoint agent not registered with valid public key")
+
+        # 1. Verify Ed25519 signature
+        if not ed25519_verify_canonical(agent.public_key, data.signature, data.receipt):
+            raise HTTPException(400, "Cryptographic execution receipt signature verification failed")
+
+        # 2. Verify receipt hash if supplied
+        if data.receipt_hash:
+            canonical_hash = hashlib.sha256(canonical(data.receipt).encode()).hexdigest()
+            if not hmac.compare_digest(canonical_hash, data.receipt_hash):
                 raise HTTPException(400, "Cryptographic execution receipt hash does not match payload")
 
-        from aegis.db import now
+        # 3. Verify cryptographic binding to command and scope
+        receipt_cmd_id = data.receipt.get("command_id")
+        receipt_action = data.receipt.get("action")
+        receipt_agent = data.receipt.get("agent_id")
+        receipt_org = data.receipt.get("organization_id")
+        receipt_status = data.receipt.get("status")
 
-        receipt_details = data.receipt.get("result", data.details) if data.receipt else data.details
-        if data.status == "SUCCESS":
-            execution.status = "VERIFIED"
-            execution.result = {
-                "verified": True,
-                "scope": "endpoint-live",
-                "enforced_externally": True,
-                "agent": name,
-                "action": data.action,
-                "receipt": data.receipt,
-                "signature": data.signature,
-                "receipt_hash": data.receipt_hash or (hashlib.sha256(canonical(data.receipt).encode()).hexdigest() if data.receipt else ""),
-                "details": receipt_details,
-                "enforced_at": now().isoformat(),
-            }
-            entity = db.scalar(
-                select(Entity).where(
-                    Entity.organization_id == principal.organization_id,
-                    Entity.type == "host",
-                    (Entity.id == execution.target) | (Entity.value == name),
+        if receipt_cmd_id != execution.id:
+            raise HTTPException(400, "Receipt command ID does not match execution")
+        if receipt_action != execution.action:
+            raise HTTPException(400, "Receipt action does not match execution")
+        if not receipt_agent or (receipt_agent != agent.id and receipt_agent != name):
+            raise HTTPException(400, "Receipt agent ID does not match enrolled agent")
+        if receipt_org != principal.organization_id:
+            raise HTTPException(403, "Receipt organization does not match authenticated organization")
+        if not receipt_status or receipt_status != data.status:
+            raise HTTPException(400, "Receipt payload status does not match request status")
+
+        # 4. Controller signature binding: require command_signature if execution was signed by controller
+        expected_ctrl_sig = (execution.result or {}).get("controller_signature")
+        receipt_ctrl_sig = data.receipt.get("command_signature")
+        if expected_ctrl_sig and (not receipt_ctrl_sig or receipt_ctrl_sig != expected_ctrl_sig):
+            raise HTTPException(400, "Receipt is not bound to the dispatched controller command")
+
+        # 5. Freshness / challenge expiration check
+        receipt_ts = data.receipt.get("timestamp")
+        if isinstance(receipt_ts, bool) or not isinstance(receipt_ts, (int, float)) or not math.isfinite(receipt_ts):
+            raise HTTPException(400, "Receipt missing valid timestamp")
+        if abs(time.time() - float(receipt_ts)) > 300.0:
+            raise HTTPException(400, "Receipt timestamp expired or outside freshness window")
+
+        # 6. Cryptographic nonce check and persistent replay protection
+        receipt_nonce = data.receipt.get("nonce")
+        if not receipt_nonce or not isinstance(receipt_nonce, str):
+            raise HTTPException(400, "Receipt missing valid cryptographic nonce")
+        if not re.match(r"^[a-zA-Z0-9_-]{16,128}$", receipt_nonce):
+            raise HTTPException(400, "Malformed cryptographic nonce format")
+
+        nonce_key = f"agent_nonce:{agent.id}:{receipt_nonce}"
+        existing_nonce = db.scalar(
+            select(WindowState)
+            .where(
+                WindowState.key == nonce_key,
+            )
+            .with_for_update()
+        )
+        if existing_nonce:
+            raise HTTPException(409, "Cryptographic nonce has already been used")
+
+        # 7. Payload details consistency
+        receipt_result = data.receipt.get("result")
+        if not isinstance(receipt_result, dict):
+            raise HTTPException(400, "Receipt requires a signed result object")
+        if data.details and data.details != receipt_result:
+            raise HTTPException(400, "Receipt details do not match signed receipt result")
+
+        from aegis.containment import receipt_outcome
+
+        receipt_details = receipt_result
+        target_status = receipt_outcome(data.action, data.status, receipt_details)
+        # Legacy/unpolled commands have no controller binding and cannot prove enforcement.
+        if not expected_ctrl_sig and target_status in {"ENFORCED", "RELEASED"}:
+            target_status = "UNKNOWN"
+        target_result = {
+            "semantics_version": 2, "verified": target_status in {"ENFORCED", "RELEASED"},
+            "receipt_authenticated": True,
+            "scope": "endpoint-simulation" if target_status == "SIMULATED" else "agent-reported",
+            "enforced_externally": target_status == "ENFORCED",
+            "containment_status": target_status, "agent": name, "action": data.action,
+            "receipt": data.receipt, "signature": data.signature,
+            "receipt_hash": hashlib.sha256(canonical(data.receipt).encode()).hexdigest(),
+            "details": receipt_details, "recorded_at": now().isoformat(),
+            "params": (execution.result or {}).get("params", {}),
+        }
+
+        # Atomic conditional update enforcing strict single execution and revision bump
+        initial_revision = execution.revision
+        res_update = db.execute(
+            update(PlaybookExecution)
+            .where(
+                PlaybookExecution.id == execution.id,
+                PlaybookExecution.organization_id == principal.organization_id,
+                PlaybookExecution.status.in_(["APPROVED", "DISPATCHED"]),
+                PlaybookExecution.revision == initial_revision,
+            )
+            .values(
+                status=target_status,
+                result=target_result,
+                revision=initial_revision + 1,
+            )
+        )
+        if res_update.rowcount != 1:
+            db.rollback()
+            raise HTTPException(409, "Command execution status changed or receipt already processed")
+
+        # Record nonce in persistent WindowState
+        # Replay-Protection Invariant: Nonce TTL must span max(response_approval_seconds, remaining_envelope_ttl) + 300s freshness
+        cmd_remaining = (float(cmd_expires_at) - time.time() + 300.0) if cmd_expires_at else 0.0
+        configured_window = float(getattr(settings, "response_approval_seconds", 3600)) + 300.0
+        nonce_ttl = max(3600.0, configured_window, cmd_remaining)
+        try:
+            db.add(
+                WindowState(
+                    key=nonce_key,
+                    data=[{"agent_id": agent.id, "command_id": execution.id, "used_at": time.time()}],
+                    expires=time.time() + nonce_ttl,
                 )
             )
-            if entity:
-                attrs = dict(entity.attributes or {})
-                if data.action == "isolate_host":
-                    attrs["isolation_status"] = "ISOLATED"
-                elif data.action == "unisolate_host":
-                    attrs["isolation_status"] = "NONE"
-                entity.attributes = attrs
-        else:
-            execution.status = "FAILED"
-            execution.result = {
-                "verified": False,
-                "scope": "endpoint-live",
-                "enforced_externally": False,
-                "agent": name,
-                "action": data.action,
-                "receipt": data.receipt,
-                "signature": data.signature,
-                "error": receipt_details.get("error", "Endpoint execution failed"),
-            }
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(409, "Cryptographic nonce has already been used") from None
 
-        execution.revision += 1
+        if data.action in {"isolate_host", "unisolate_host"}:
+            # Failed/uncertain changes invalidate a previous state; simulation is explicit.
+            state = target_status if target_status in {"ENFORCED", "RELEASED", "SIMULATED"} else "UNKNOWN"
+            if target:
+                target.attributes = dict(target.attributes or {}) | {
+                    "isolation_status": state, "containment_execution_id": execution.id,
+                    "containment_semantics_version": 2,
+                }
+            agent.isolation_status = state
+
+        db.refresh(execution)
         audit(
             db,
             settings,
@@ -2445,9 +2630,10 @@ def create_app(settings: Settings | None = None):
                 "version": c.version,
                 "status": agents_map[c.name].status if c.name in agents_map else "ONLINE",
                 "last_heartbeat": c.last_heartbeat.isoformat(),
-                "isolation_status": hosts[c.name].attributes.get("isolation_status", "NONE")
+                "isolation_status": (hosts[c.name].attributes.get("isolation_status", "UNKNOWN")
+                    if hosts[c.name].attributes.get("containment_semantics_version") == 2 else "UNKNOWN")
                 if c.name in hosts and hosts[c.name] and hosts[c.name].attributes
-                else "NONE",
+                else "UNKNOWN",
                 "os": hosts[c.name].attributes.get("os", "unknown")
                 if c.name in hosts and hosts[c.name] and hosts[c.name].attributes
                 else "unknown",

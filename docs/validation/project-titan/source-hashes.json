@@ -1,0 +1,6 @@
+{
+  "aegis/api.py": "cfdae53af8f7f928424fa986157f6b4d1218c75f72420a69dad4fbfb6eee9ce7",
+  "aegis/db_safety.py": "e049babe5c4c53186ca9fd0ae44da530f6900c3838a9ffcd8997fd954da47f26",
+  "compose.production.yaml": "f246aac9d053e390a3af4623f928d4973cd0736995a95306046e7d0d56dfd123",
+  "tests/test_titan_regressions.py": "79361abf6b3effd5d2ad176294afcbc771b43eed0d750dafa15e7dce0d8c74ab"
+}

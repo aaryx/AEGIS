@@ -33,6 +33,7 @@ def mock_env_config(tmp_path, monkeypatch):
         f"OPENSEARCH_PASSWORD={secret_pass}\n"
     )
     monkeypatch.setattr(integration_gate, "ROOT", tmp_path)
+    monkeypatch.setattr(integration_gate, "prepare_test_database", lambda *args, **kwargs: None)
     return {"path": env_file, "secret": secret_pass}
 
 
@@ -166,7 +167,7 @@ def test_gate_fails_when_no_tests_collected(mock_env_config, monkeypatch, capsys
 
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
-    assert "RELEASE GATE FAILED: Expected at least 16 integration tests, got 0." in captured.err
+    assert "RELEASE GATE FAILED: Expected at least 17 integration tests, got 0." in captured.err
 
 
 def test_gate_fails_when_pytest_output_malformed(mock_env_config, monkeypatch, capsys):
@@ -224,12 +225,13 @@ ALL_PASSED_STDOUT = (
     "tests/test_postgres_integration.py::test_postgres_concurrent_rule_activation_and_replay PASSED\n"
     "tests/test_postgres_integration.py::test_postgres_concurrent_storyline_correlation PASSED\n"
     "tests/test_integration.py::test_real_dependency_connectivity PASSED\n"
-    "=================== 16 passed in 15.20s ===================\n"
+    "tests/test_integration.py::test_real_redis_queue_semantics_and_delivery PASSED\n"
+    "=================== 17 passed in 15.20s ===================\n"
 )
 
 
 def test_gate_succeeds_when_all_healthy_and_16_pass(mock_env_config, monkeypatch, capsys):
-    """Condition: All services healthy and all 16 fixture cases pass cleanly (Happy Path)."""
+    """Condition: All services healthy and all 17 fixture cases pass cleanly (Happy Path)."""
     monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
 
     mock_process = MagicMock()
@@ -240,7 +242,7 @@ def test_gate_succeeds_when_all_healthy_and_16_pass(mock_env_config, monkeypatch
         integration_gate.main()
 
     captured = capsys.readouterr()
-    assert "Passed:     16" in captured.out
+    assert "Passed:     17" in captured.out
     assert "Failed:     0" in captured.out
     assert "Skipped:    0" in captured.out
     assert "Deselected: 0" in captured.out
@@ -288,8 +290,9 @@ def test_gate_fails_when_mandatory_test_renamed_or_missing(mock_env_config, monk
         "tests/test_postgres_integration.py::test_postgres_schema_migration_previous_to_current PASSED\n"
         "tests/test_postgres_integration.py::test_postgres_concurrent_rule_activation_and_replay PASSED\n"
         "tests/test_postgres_integration.py::test_postgres_concurrent_storyline_correlation PASSED\n"
+        "tests/test_integration.py::test_real_redis_queue_semantics_and_delivery PASSED\n"
         "tests/test_integration.py::test_dummy_extra PASSED\n"
-        "=================== 16 passed in 15.20s ===================\n"
+        "=================== 17 passed in 15.20s ===================\n"
     )
 
     mock_process = MagicMock()
@@ -333,3 +336,41 @@ def test_gate_never_leaks_secrets_in_console_output(mock_env_config, monkeypatch
     captured = capsys.readouterr()
     assert secret not in captured.out
     assert secret not in captured.err
+
+
+def test_gate_sanitizes_database_preparation_exception(mock_env_config, monkeypatch, capsys):
+    """Condition: Database preparation exception must not leak credentials to stderr."""
+    secret = mock_env_config["secret"]
+    monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
+
+    def failing_prepare(test_url, admin_url, test_db_name):
+        raise RuntimeError(f"Connection failed: {admin_url} password={secret}")
+
+    monkeypatch.setattr(integration_gate, "prepare_test_database", failing_prepare)
+
+    with pytest.raises(SystemExit) as exc_info:
+        integration_gate.main()
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert secret not in captured.err
+    assert secret not in captured.out
+    assert "******" in captured.err
+    assert "RuntimeError" in captured.err
+
+
+def test_gate_redacts_credentials_from_child_output(mock_env_config, monkeypatch, capsys):
+    """Condition: Streamed child process output must have credentials redacted."""
+    secret = mock_env_config["secret"]
+    monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
+
+    mock_process = MagicMock(returncode=1)
+    mock_process.stdout = io.StringIO(f"Error during run: {secret} in connection string\n=== 1 failed ===")
+
+    with patch("subprocess.Popen", return_value=mock_process), pytest.raises(SystemExit):
+        integration_gate.main()
+
+    captured = capsys.readouterr()
+    assert secret not in captured.out
+    assert secret not in captured.err
+    assert "******" in captured.out

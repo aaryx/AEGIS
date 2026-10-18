@@ -1,0 +1,146 @@
+{
+  "project": "IRONCLAD",
+  "baseline_sha": "33a5ea90a964e206fa63326322e46d296ae2efb1",
+  "branch": "feature/ironclad-qualification",
+  "final_local_backend": {
+    "passed": 397,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 26,
+    "total": 423,
+    "coverage_percent": 82,
+    "artifact": "release-backend.xml"
+  },
+  "frontend": {
+    "passed": 27,
+    "failed": 0,
+    "skipped": 0
+  },
+  "rules": {
+    "tested": 34,
+    "passed": 34,
+    "failed": 0
+  },
+  "checks": {
+    "ruff": "passed: 0 errors",
+    "mypy": "passed: 38 source files",
+    "bandit": "passed: no medium/high findings",
+    "pip_audit": "passed: no known vulnerabilities; editable project excluded",
+    "npm_audit": "passed: zero vulnerabilities",
+    "frontend_typecheck": "passed",
+    "frontend_build": "passed (Next.js 16.4.0 Turbopack)",
+    "format": "passed check rules"
+  },
+  "findings": {
+    "IRONCLAD-01": {
+      "severity": "High",
+      "component": "Data Retention & Legal Holds",
+      "file": "aegis/retention.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_01_retention_legal_hold_case_evidence_plural_and_active_alerts"
+    },
+    "IRONCLAD-02": {
+      "severity": "High",
+      "component": "Agent Cryptographic Receipt Verification",
+      "file": "aegis/api.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_02_agent_receipt_requires_cryptographic_verification"
+    },
+    "IRONCLAD-03": {
+      "severity": "High",
+      "component": "Agent Token Auth & Anti-Impersonation",
+      "file": "aegis/api.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_03_enrolled_agent_token_can_access_agent_endpoints_and_rejects_impersonation"
+    },
+    "IRONCLAD-04": {
+      "severity": "Medium",
+      "component": "Agent Ed25519 Key Rotation Verification",
+      "file": "aegis/agent.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_04_agent_key_rotation_validates_signature"
+    },
+    "IRONCLAD-05": {
+      "severity": "High",
+      "component": "Syslog TCP Bounded Buffer Protection",
+      "file": "aegis/syslog.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_05_syslog_tcp_oversized_octet_frame_defense"
+    },
+    "IRONCLAD-06": {
+      "severity": "Medium",
+      "component": "Ingestion Parser Error Propagation (400/422 vs 503)",
+      "file": "aegis/parsers.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_06_ingestion_parser_malformed_event_returns_400_not_503"
+    },
+    "IRONCLAD-07": {
+      "severity": "High",
+      "component": "Agent Process Termination Safety Guardrails",
+      "file": "aegis/agent.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_07_agent_terminate_process_blocks_invalid_pid_and_system_binaries"
+    },
+    "IRONCLAD-08": {
+      "severity": "Low",
+      "component": "Case Status Workflow State Machine",
+      "file": "aegis/api.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_08_case_status_workflow_transitions"
+    },
+    "IRONCLAD-09": {
+      "severity": "High",
+      "component": "Case & Evidence Multi-Tenant Isolation",
+      "file": "aegis/api.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_09_tenant_isolation_cases_and_evidence_cross_attach"
+    },
+    "IRONCLAD-10": {
+      "severity": "High",
+      "component": "SOAR Playbook Multi-Tenant Isolation",
+      "file": "aegis/soar_api.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_10_tenant_isolation_soar_playbooks_and_executions"
+    },
+    "IRONCLAD-11": {
+      "severity": "Medium",
+      "component": "SOAR Separation of Duties (Self-Approval Forbidden)",
+      "file": "aegis/api.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_11_soar_separation_of_duty_prevents_self_approval"
+    },
+    "IRONCLAD-12": {
+      "severity": "Medium",
+      "component": "Rule Replay Multi-Tenant Isolation",
+      "file": "aegis/api.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_12_tenant_isolation_rule_replay_jobs"
+    },
+    "IRONCLAD-13": {
+      "severity": "Medium",
+      "component": "System Retry Multi-Tenant Isolation",
+      "file": "aegis/api.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_13_tenant_isolation_dead_letter_and_search_retries"
+    },
+    "IRONCLAD-14": {
+      "severity": "High",
+      "component": "Resource Export Multi-Tenant Scoping",
+      "file": "aegis/api.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_14_tenant_isolation_export_endpoint"
+    },
+    "IRONCLAD-15": {
+      "severity": "Medium",
+      "component": "Incident Idempotency Conflict Handling (HTTP 409)",
+      "file": "aegis/api.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_15_incident_idempotency_key_conflict_rejection"
+    },
+    "IRONCLAD-16": {
+      "severity": "Medium",
+      "component": "Sigma Import Guardrails & Size Limits",
+      "file": "aegis/api.py",
+      "test": "tests/test_ironclad_qualification.py::test_ironclad_16_sigma_rule_import_validation_and_size_limits"
+    },
+    "IRONCLAD-17": {
+      "severity": "Low",
+      "component": "Benchmark SQLite Stale Schema Reset",
+      "file": "scripts/benchmark_concurrency_and_stress.py",
+      "test": "scripts/benchmark_concurrency_and_stress.py"
+    }
+  },
+  "locally_blocked": [
+    "Docker Compose startup and live multi-container orchestration (Docker daemon not running on host)",
+    "Live external PostgreSQL 17.9 instance interruption and failover",
+    "Live Redis cluster network partition and connection drops",
+    "Trivy container image security scanning",
+    "Gitleaks native binary secret scanner",
+    "Container CycloneDX SBOM generation"
+  ]
+}

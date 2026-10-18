@@ -1,0 +1,42 @@
+{
+  "regression-before": {
+    "name": "pytest",
+    "errors": "0",
+    "failures": "8",
+    "skipped": "0",
+    "tests": "8",
+    "time": "1.579",
+    "timestamp": "2026-10-18T17:32:15.762578+05:30",
+    "passed": 0
+  },
+  "focused": {
+    "name": "pytest",
+    "errors": "0",
+    "failures": "0",
+    "skipped": "0",
+    "tests": "76",
+    "time": "11.467",
+    "timestamp": "2026-10-18T17:33:14.933051+05:30",
+    "passed": 76
+  },
+  "focused-final": {
+    "name": "pytest",
+    "errors": "0",
+    "failures": "0",
+    "skipped": "0",
+    "tests": "85",
+    "time": "11.343",
+    "timestamp": "2026-10-18T17:34:09.834321+05:30",
+    "passed": 85
+  },
+  "full": {
+    "name": "pytest",
+    "errors": "0",
+    "failures": "0",
+    "skipped": "27",
+    "tests": "484",
+    "time": "213.207",
+    "timestamp": "2026-10-18T17:34:27.317751+05:30",
+    "passed": 457
+  }
+}
