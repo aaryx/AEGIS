@@ -5,7 +5,7 @@
 **Triggering Commit:** `e864d4ae8e34ab74f322cab5372ddb49b1186be7`  
 **Failed Step:** `Secret scan` (`gitleaks/gitleaks-action@v2`)  
 **Investigated By:** Principal DevSecOps Engineer & Security Release Manager  
-**Status:** **RESOLVED & VERIFIED LOCALLY**
+**Status:** **RESOLVED & VERIFIED IN REMOTE CI**
 
 ---
 
@@ -14,6 +14,8 @@
 In GitHub Actions workflow run `AEGIS verification #31` triggered on branch `feature/ironclad-qualification`, all preliminary jobs (linting, typechecking, full pytest suite, Next.js build, Playwright e2e drills, Docker Compose integration, Trivy container security scans, and CycloneDX SBOM generation) completed successfully.
 
 The workflow subsequently failed at the `Secret scan` step:
+- **Run ID:** `39134341760`
+- **Triggering Commit:** `e864d4ae8e34ab74f322cab5372ddb49b1186be7` (`e864d4a`)
 - **Scan Scope:** 4 commits scanned (`33a5ea9..e864d4a`), ~986.09 KB scanned.
 - **Scanner Outcome:** `1 leak found` (exit code `1`).
 - **Artifact:** SARIF diagnostic report uploaded as `gitleaks-results.sarif`.
@@ -27,7 +29,7 @@ Inspection of the downloaded SARIF artifact (`gitleaks-results.sarif`) revealed 
 - **Scanner Tool:** GitLeaks v8.x (`gitleaks/gitleaks-action@v2`)
 - **Rule ID:** `curl-auth-user`
 - **Location:** File `compose.production.yaml`, Line 37
-- **Commit Introducing Change:** `772d6b62c87497956ede41bc706dc69bc5ab83bd`
+- **Commit Introducing Change:** `772d6b62c87497956ede41bc706dc69bc5ab83bd` (`772d6b6`)
 - **Redacted Context:**
   ```yaml
   test: [CMD-SHELL, 'curl -fsS --cacert /usr/share/opensearch/config/certs/root-ca.pem --user "admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD" https://localhost:9200/_cluster/health >/dev/null']
@@ -91,6 +93,7 @@ A defense-in-depth remediation was implemented:
 
 ## 5. Verification & Scanner Evidence
 
+### 5.1 Local Tooling & Regression Verification
 The remediation was verified locally using GitLeaks v8.30.1:
 
 - **Command:** `gitleaks detect --config=".gitleaks.toml" --redact -v`
@@ -98,6 +101,44 @@ The remediation was verified locally using GitLeaks v8.30.1:
 - **Commit Range Scan:** 4 commits scanned (`33a5ea9..e864d4a`).
 - **Result:** **0 leaks found across both scans (Exit Code: 0).**
 - **Regression Tests:** Executed `test_titan_regressions.py` and `test_titan_phase3_security_hardening.py` (26 passed in 5.41s).
+
+### 5.2 Commit & Push Status
+- **Remediation Commit SHA:** `3a96b13c0579baff0377ea69a3ba8845b41e5e60` (`3a96b13`)
+- **Commit Message:** `fix(ci): remediate gitleaks false positive in opensearch healthcheck`
+- **Target Branch:** `feature/ironclad-qualification`
+- **Remote Push:** Pushed cleanly to `origin/feature/ironclad-qualification` (zero history rewrites, zero force-pushes).
+
+### 5.3 Remote GitHub Actions Verification
+- **Workflow:** `AEGIS verification`
+- **Run ID:** `39142305448`
+- **Run URL:** https://github.com/aaryx/AEGIS/actions/runs/39142305448
+- **Job ID:** `117719033213`
+- **Run Status:** **COMPLETED — SUCCESS (100% Green in 7m42s)**
+- **Secret Scan Step Output:**
+  ```text
+  Version to install: 8.24.3 (target directory: /tmp/gitleaks-8.24.3)
+  Gitleaks restored from cache
+  gitleaks cmd: gitleaks detect --redact -v --exit-code=2 --report-format=sarif --report-path=results.sarif --log-level=debug --log-opts=-1
+  INF 1 commits scanned.
+  Artifact gitleaks-results.sarif.zip successfully finalized. Artifact ID 12142540790
+  ✅ No leaks detected
+  ```
+- **Downstream Gates Verified:**
+  - `scripts/dev.py lint`: Passed
+  - `scripts/dev.py typecheck`: Passed
+  - `pytest --cov=aegis`: Passed
+  - `aegis rules test --all`: Passed
+  - `npm --prefix web test`: Passed
+  - `scripts/dev.py security`: Bandit passed
+  - `npm --prefix web run build`: Passed
+  - `scripts/e2e.py` (Playwright): Passed
+  - `docker compose up -d --build --wait`: All services healthy
+  - `scripts/dev.py integration`: Passed
+  - `scripts/acceptance.py`: Passed
+  - `scripts/recovery_drill.py`: Passed
+  - `scripts/compose_e2e.py`: Passed
+  - Trivy Container Image Scans & SBOMs: Passed
+  - Gitleaks Secret Scan: `✅ No leaks detected`
 
 ---
 

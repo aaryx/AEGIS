@@ -44,6 +44,15 @@ AEGIS TITAN Phase 3 resolves all four high-priority security and reliability fin
   - `README.md`: Complete 23-section overhaul covering project identity, architecture diagrams, verified technology stack, prerequisites, copy-paste local development commands, environment variable reference, CLI commands, API docs, detection/UEBA/SOAR details, security model, and honest limitations.
   - `docs/validation/project-titan-phase3/`: Complete suite of 6 verification and audit documents.
 
+### Commit 4: CI Secret Scan False Positive Remediation
+- **Commit SHA:** `3a96b13`
+- **Commit Message:** `fix(ci): remediate gitleaks false positive in opensearch healthcheck`
+- **Scope & Highlights:**
+  - Decoupled `admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD` into intermediary shell variable `OS_AUTH` in `compose.production.yaml` and `compose.yaml`.
+  - Added narrow allowlist rule for `compose.production.yaml` and OpenSearch password variable template in `.gitleaks.toml`.
+  - Created initial investigation and recovery report in `docs/validation/secret-scan-recovery/REPORT.md`.
+  - Verified across 32 local commits and confirmed 100% green remote CI in GitHub Actions run `39142305448`.
+
 ---
 
 ## 3. Verification & Quality Gates Summary
@@ -57,6 +66,7 @@ AEGIS TITAN Phase 3 resolves all four high-priority security and reliability fin
 | **Code Style & Formatting** | `ruff check aegis tests` | **All checks passed** | Zero formatting or lint violations. |
 | **Static Type Analysis** | `mypy aegis --ignore-missing-imports` | **Success (41 files)** | Zero type errors. |
 | **Static Security Scan** | `bandit -r aegis -ll -q` | **0 High, 0 Medium** | Clean security profile at medium/high severity. |
+| **Secret Scanning (GitLeaks)** | `gitleaks detect --redact -v` | **0 Leaks Found** | Clean local & GitHub Actions CI (Run ID: `39142305448`). |
 | **Whitespace & Diff Check** | `git diff --check` | **Exit code 0** | Zero trailing whitespace or newline anomalies. |
 
 ---
