@@ -285,8 +285,8 @@ class ParserRegistry:
         parser = next(parser for parser in self.parsers if parser.can_parse(incoming))
         try:
             parsed = parser.parse(incoming)
-        except (AttributeError, KeyError, TypeError, OverflowError) as exc:
-            raise ValueError("Malformed source log structure") from exc
+        except (AttributeError, KeyError, TypeError, OverflowError, ValueError) as exc:
+            raise ValueError(f"Malformed source log structure: {exc}") from exc
         if not parser.validate(parsed):
             raise ValueError("Parser validation failed")
         parsed.setdefault("timestamp", incoming.timestamp or accepted_at)
@@ -296,7 +296,10 @@ class ParserRegistry:
             ingest_timestamp=accepted_at,
             metadata={"parser": type(parser).__name__, "classification": "SENSITIVE"},
         )
-        result = Event.model_validate(data)
+        try:
+            result = Event.model_validate(data)
+        except Exception as exc:
+            raise ValueError(f"Event schema validation failed: {exc}") from exc
         if result.timestamp.tzinfo is None:
             raise ValueError("Parsed timestamp must include timezone")
         result.timestamp = result.timestamp.astimezone(UTC)

@@ -1,0 +1,6 @@
+{
+  "tracked_diff_sections_changed_since_baseline": [
+    "diff --git a/aegis/api.py b/aegis/api.py"
+  ],
+  "expected_only_api": true
+}

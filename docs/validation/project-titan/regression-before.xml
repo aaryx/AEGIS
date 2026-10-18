@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="8" skipped="0" tests="8" time="1.579" timestamp="2026-10-18T17:32:15.762578+05:30" hostname="LAPTOP-KF98AASU"><testcase classname="tests.test_titan_regressions" name="test_database_target_override_rejected[?dbname=aegis]" time="0.002"><failure message="Failed: DID NOT RAISE &lt;class 'aegis.db_safety.DatabaseSafetyError'&gt;">tests\test_titan_regressions.py:17: in test_database_target_override_rejected
+    with pytest.raises(DatabaseSafetyError):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE &lt;class 'aegis.db_safety.DatabaseSafetyError'&gt;</failure></testcase><testcase classname="tests.test_titan_regressions" name="test_database_target_override_rejected[?host=production.internal]" time="0.001"><failure message="Failed: DID NOT RAISE &lt;class 'aegis.db_safety.DatabaseSafetyError'&gt;">tests\test_titan_regressions.py:17: in test_database_target_override_rejected
+    with pytest.raises(DatabaseSafetyError):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE &lt;class 'aegis.db_safety.DatabaseSafetyError'&gt;</failure></testcase><testcase classname="tests.test_titan_regressions" name="test_database_target_override_rejected[?service=production]" time="0.000"><failure message="Failed: DID NOT RAISE &lt;class 'aegis.db_safety.DatabaseSafetyError'&gt;">tests\test_titan_regressions.py:17: in test_database_target_override_rejected
+    with pytest.raises(DatabaseSafetyError):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE &lt;class 'aegis.db_safety.DatabaseSafetyError'&gt;</failure></testcase><testcase classname="tests.test_titan_regressions" name="test_ambiguous_test_database_rejected[sqlite:///customer.db]" time="0.000"><failure message="Failed: DID NOT RAISE &lt;class 'aegis.db_safety.DatabaseSafetyError'&gt;">tests\test_titan_regressions.py:23: in test_ambiguous_test_database_rejected
+    with pytest.raises(DatabaseSafetyError):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE &lt;class 'aegis.db_safety.DatabaseSafetyError'&gt;</failure></testcase><testcase classname="tests.test_titan_regressions" name="test_ambiguous_test_database_rejected[postgresql://localhost/contest]" time="0.000"><failure message="Failed: DID NOT RAISE &lt;class 'aegis.db_safety.DatabaseSafetyError'&gt;">tests\test_titan_regressions.py:23: in test_ambiguous_test_database_rejected
+    with pytest.raises(DatabaseSafetyError):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE &lt;class 'aegis.db_safety.DatabaseSafetyError'&gt;</failure></testcase><testcase classname="tests.test_titan_regressions" name="test_ambiguous_test_database_rejected[mysql://localhost/aegis_test]" time="0.000"><failure message="Failed: DID NOT RAISE &lt;class 'aegis.db_safety.DatabaseSafetyError'&gt;">tests\test_titan_regressions.py:23: in test_ambiguous_test_database_rejected
+    with pytest.raises(DatabaseSafetyError):
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: DID NOT RAISE &lt;class 'aegis.db_safety.DatabaseSafetyError'&gt;</failure></testcase><testcase classname="tests.test_titan_regressions" name="test_signed_receipt_cannot_complete_another_hosts_command[False]" time="0.683"><failure message="assert 200 == 403&#10; +  where 200 = &lt;Response [200 OK]&gt;.status_code">tests\test_titan_regressions.py:57: in test_signed_receipt_cannot_complete_another_hosts_command
+    assert response.status_code == 403
+E   assert 200 == 403
+E    +  where 200 = &lt;Response [200 OK]&gt;.status_code</failure></testcase><testcase classname="tests.test_titan_regressions" name="test_signed_receipt_cannot_complete_another_hosts_command[True]" time="0.595"><failure message="assert 200 == 403&#10; +  where 200 = &lt;Response [200 OK]&gt;.status_code">tests\test_titan_regressions.py:57: in test_signed_receipt_cannot_complete_another_hosts_command
+    assert response.status_code == 403
+E   assert 200 == 403
+E    +  where 200 = &lt;Response [200 OK]&gt;.status_code</failure></testcase></testsuite></testsuites>

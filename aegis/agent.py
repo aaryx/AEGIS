@@ -14,16 +14,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import platform
+import re
 import secrets
-import signal
 import socket
-import subprocess
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -60,6 +62,7 @@ class EndpointAgent:
         signing_key: Ed25519PrivateKey | None = None,
         key_path: str | None = None,
         controller_public_key: str | None = None,
+        allow_network_policy: bool = False,
     ) -> None:
         self.name = name or socket.gethostname()
         self.server_url = server_url.rstrip("/")
@@ -67,6 +70,10 @@ class EndpointAgent:
         self.controller_ip = controller_ip
         self.simulation_mode = simulation_mode
         self.isolated = False
+        self.containment_state = "UNKNOWN"
+        self.allow_network_policy = allow_network_policy
+        self._execution_lock = threading.Lock()
+        self._receipts: dict[str, dict] = {}
         self.active_firewall_rules: list[str] = []
         self.key_path = key_path
         self.agent_id: str | None = None
@@ -107,7 +114,7 @@ class EndpointAgent:
             "os_release": platform.release(),
             "ip": self._get_local_ip(),
             "status": "ONLINE",
-            "isolation_status": "ISOLATED" if self.isolated else "NONE",
+            "isolation_status": self.containment_state,
             "capabilities": ["isolate_host", "unisolate_host", "terminate_process"],
             "public_key": self.public_key_hex,
         }
@@ -151,7 +158,7 @@ class EndpointAgent:
     def rotate_key(self, client: Any = None) -> dict[str, Any]:
         """Rotates the endpoint's Ed25519 keypair and registers the new public key."""
         new_private, new_public_hex = generate_ed25519_keypair()
-        rotation_msg = {"name": self.name, "new_public_key": new_public_hex, "timestamp": time.time()}
+        rotation_msg = {"name": self.name, "new_public_key": new_public_hex}
         sig = ed25519_sign_canonical(self.private_key, rotation_msg)
         payload = {
             "new_public_key": new_public_hex,
@@ -171,14 +178,15 @@ class EndpointAgent:
         """Registers agent posture and telemetry with AEGIS controller."""
         payload = self.get_system_info()
         result: dict[str, Any] = self._request("POST", "agents/heartbeat", payload, client=client)
+        self.agent_id = result.get("agent_id") or self.agent_id
         logger.info("Heartbeat sent for %s (isolated=%s)", self.name, self.isolated)
         return result
 
-    def verify_command(self, cmd: dict[str, Any]) -> bool:
+    def verify_command(self, cmd: dict[str, Any], consume: bool = True) -> bool:
         """Verifies controller signature, expiry, replay, and scoping on a command."""
         envelope = cmd.get("envelope")
         sig = cmd.get("controller_signature")
-        ctrl_pubkey = cmd.get("controller_public_key") or self.controller_public_key
+        ctrl_pubkey = self.controller_public_key or (cmd.get("controller_public_key") if self.simulation_mode else None)
 
         if not envelope or not sig or not ctrl_pubkey:
             # Reject unsigned commands
@@ -190,9 +198,13 @@ class EndpointAgent:
             logger.warning("Rejecting command %s: invalid controller signature", cmd.get("id"))
             return False
 
+        if (envelope.get("command_id") != cmd.get("id") or envelope.get("action") != cmd.get("action")
+                or envelope.get("parameters", {}) != cmd.get("params", {})):
+            return False
+
         # 2. Verify target agent scoping
         target_agent = envelope.get("agent_id")
-        if target_agent and self.agent_id and target_agent != self.agent_id and target_agent != self.name:
+        if target_agent not in {self.agent_id, self.name} or not target_agent:
             logger.warning(
                 "Rejecting command %s: target agent %s does not match self (%s)",
                 cmd.get("id"),
@@ -204,17 +216,18 @@ class EndpointAgent:
         # 3. Verify timestamp and expiration
         now_ts = time.time()
         expires_at = envelope.get("expires_at", 0)
-        if expires_at < now_ts:
+        if (type(expires_at) not in (int, float) or not math.isfinite(expires_at) or expires_at < now_ts):
             logger.warning("Rejecting command %s: command expired at %s (now=%s)", cmd.get("id"), expires_at, now_ts)
             return False
 
         # 4. Anti-replay verification: nonce must be unique
         nonce = envelope.get("nonce")
-        if not nonce or nonce in self._seen_nonces:
+        if not isinstance(nonce, str) or not nonce or (consume and nonce in self._seen_nonces):
             logger.warning("Rejecting command %s: replayed or missing nonce %s", cmd.get("id"), nonce)
             return False
 
-        self._seen_nonces.add(nonce)
+        if consume:
+            self._seen_nonces.add(nonce)
         return True
 
     def poll_commands(self, client: Any = None) -> list[dict[str, Any]]:
@@ -224,158 +237,66 @@ class EndpointAgent:
         )
         verified: list[dict[str, Any]] = []
         for cmd in commands:
-            if self.verify_command(cmd):
+            if self.verify_command(cmd, consume=cmd.get("id") not in self._receipts):
                 verified.append(cmd)
             else:
                 logger.error("Command %s rejected by agent signature and security verification", cmd.get("id"))
         return verified
 
-    def isolate_host(self, controller_ip: str | None = None) -> dict[str, Any]:
-        """Applies host network containment, blocking external traffic while allowing AEGIS controller."""
-        target_controller = controller_ip or self.controller_ip
-        rule_prefix = f"AEGIS_ISOLATE_{self.name}"
+    def _network_action(self, isolate: bool, controller_ip: str | None = None):
+        from aegis.endpoint_firewall import LinuxContainment
 
+        # The exception is operator-configured, never selected by a playbook.
+        if controller_ip is not None and controller_ip != self.controller_ip:
+            raise ValueError("Command cannot override operator controller IP")
         if self.simulation_mode:
-            self.isolated = True
-            simulated_rules = [
-                f"{rule_prefix}_BLOCK_INBOUND",
-                f"{rule_prefix}_BLOCK_OUTBOUND",
-                f"{rule_prefix}_ALLOW_CONTROLLER_{target_controller}",
-            ]
-            self.active_firewall_rules = simulated_rules
-            return {
-                "action": "isolate_host",
-                "isolated": True,
-                "mode": "simulated",
-                "controller_ip": target_controller,
-                "rules_applied": simulated_rules,
-                "applied_at": datetime.now(UTC).isoformat(),
-            }
-
-        # Live host containment
-        rules_applied = []
+            self.containment_state = "SIMULATED"
+            self.isolated = False
+            return {"action": "isolate_host" if isolate else "unisolate_host",
+                    "mode": "simulated", "outcome": "SIMULATED", "isolated": False,
+                    "requested_isolation": isolate}
+        if not self.allow_network_policy or sys.platform != "linux":
+            raise RuntimeError("Live network policy is disabled or unsupported")
+        if not self.key_path or not self.controller_public_key or not self.agent_id:
+            raise RuntimeError("Live policy requires enrollment, a persistent agent key and pinned controller key")
+        endpoint = urlsplit(self.server_url)
+        if endpoint.scheme != "https" or endpoint.hostname != self.controller_ip:
+            raise ValueError("Live controller URL must use HTTPS and the configured IPv4 literal")
+        policy = LinuxContainment(self.agent_id, self.controller_ip, endpoint.port or 443)
         try:
-            if sys.platform == "win32":
-                subprocess.run(
-                    [
-                        "netsh",
-                        "advfirewall",
-                        "firewall",
-                        "add",
-                        "rule",
-                        f"name={rule_prefix}_OUT",
-                        "dir=out",
-                        "action=block",
-                    ],
-                    check=True,
-                    capture_output=True,
-                )
-                rules_applied.append(f"{rule_prefix}_OUT")
-                subprocess.run(
-                    [
-                        "netsh",
-                        "advfirewall",
-                        "firewall",
-                        "add",
-                        "rule",
-                        f"name={rule_prefix}_CTRL",
-                        "dir=out",
-                        "action=allow",
-                        f"remoteip={target_controller}",
-                    ],
-                    check=True,
-                    capture_output=True,
-                )
-                rules_applied.append(f"{rule_prefix}_CTRL")
-            else:
-                subprocess.run(
-                    ["iptables", "-A", "OUTPUT", "-d", target_controller, "-j", "ACCEPT"],
-                    check=True,
-                    capture_output=True,
-                )
-                subprocess.run(
-                    ["iptables", "-A", "OUTPUT", "-m", "state", "--state", "ESTABLISHED", "-j", "ACCEPT"],
-                    check=True,
-                    capture_output=True,
-                )
-                rules_applied.append("iptables-containment")
-            self.isolated = True
-            self.active_firewall_rules = rules_applied
-            return {
-                "action": "isolate_host",
-                "isolated": True,
-                "mode": "live",
-                "controller_ip": target_controller,
-                "rules_applied": rules_applied,
-                "applied_at": datetime.now(UTC).isoformat(),
-            }
-        except Exception as exc:
-            logger.warning("Live isolation failed (%s); falling back to simulated containment", exc)
-            self.isolated = True
-            self.active_firewall_rules = [f"{rule_prefix}_SIMULATED"]
-            return {
-                "action": "isolate_host",
-                "isolated": True,
-                "mode": "simulated_fallback",
-                "controller_ip": target_controller,
-                "rules_applied": [f"{rule_prefix}_SIMULATED"],
-                "error": str(exc),
-                "applied_at": datetime.now(UTC).isoformat(),
-            }
+            result = policy.apply(isolate)
+        except Exception:
+            self.isolated, self.containment_state = False, "UNKNOWN"
+            raise
+        self.isolated, self.containment_state = isolate, result["outcome"]
+        return result
+
+    def isolate_host(self, controller_ip: str | None = None) -> dict[str, Any]:
+        return self._network_action(True, controller_ip)
 
     def unisolate_host(self) -> dict[str, Any]:
-        """Removes host network containment rules and restores regular connectivity."""
-        rule_prefix = f"AEGIS_ISOLATE_{self.name}"
-        rules_removed = list(self.active_firewall_rules)
-
-        if self.simulation_mode:
-            self.isolated = False
-            self.active_firewall_rules = []
-            return {
-                "action": "unisolate_host",
-                "isolated": False,
-                "mode": "simulated",
-                "rules_removed": rules_removed or [f"{rule_prefix}_DEFAULT"],
-                "restored_at": datetime.now(UTC).isoformat(),
-            }
-
-        # Live restoration
-        try:
-            if sys.platform == "win32":
-                subprocess.run(
-                    ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={rule_prefix}_OUT"],
-                    capture_output=True,
-                )
-                subprocess.run(
-                    ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={rule_prefix}_CTRL"],
-                    capture_output=True,
-                )
-            else:
-                subprocess.run(["iptables", "-F"], capture_output=True)
-            self.isolated = False
-            self.active_firewall_rules = []
-            return {
-                "action": "unisolate_host",
-                "isolated": False,
-                "mode": "live",
-                "rules_removed": rules_removed or ["live-rules"],
-                "restored_at": datetime.now(UTC).isoformat(),
-            }
-        except Exception as exc:
-            self.isolated = False
-            self.active_firewall_rules = []
-            return {
-                "action": "unisolate_host",
-                "isolated": False,
-                "mode": "simulated_fallback",
-                "error": str(exc),
-                "restored_at": datetime.now(UTC).isoformat(),
-            }
+        return self._network_action(False)
 
     def terminate_process(self, pid: int | None = None, name: str | None = None) -> dict[str, Any]:
         """Terminates an offending process by PID or process name."""
-        if not pid and not name:
+        if pid is None and not name:
             raise ValueError("Specify either pid or process name to terminate")
+
+        if pid is not None:
+            if pid <= 1:
+                raise ValueError("Invalid target PID: terminating system or critical processes is forbidden")
+
+        if name is not None:
+            clean_name = str(name).strip()
+            if (
+                not clean_name
+                or not re.match(r"^[\w\.-]+$", clean_name)
+                or clean_name.lower() in {
+                    "init", "system", "idle", "systemd", "winlogon.exe",
+                    "csrss.exe", "lsass.exe", "smss.exe", "services.exe",
+                }
+            ):
+                raise ValueError("Invalid or restricted process name for termination")
 
         if self.simulation_mode:
             return {
@@ -387,35 +308,9 @@ class EndpointAgent:
                 "timestamp": datetime.now(UTC).isoformat(),
             }
 
-        # Live process termination
-        killed = False
-        try:
-            if pid:
-                os.kill(pid, signal.SIGTERM)
-                killed = True
-            elif name:
-                if sys.platform == "win32":
-                    subprocess.run(["taskkill", "/F", "/IM", name], check=True, capture_output=True)
-                else:
-                    subprocess.run(["pkill", "-9", "-f", name], check=True, capture_output=True)
-                killed = True
-            return {
-                "action": "terminate_process",
-                "terminated": killed,
-                "mode": "live",
-                "target_pid": pid,
-                "target_name": name,
-                "timestamp": datetime.now(UTC).isoformat(),
-            }
-        except Exception as exc:
-            return {
-                "action": "terminate_process",
-                "terminated": False,
-                "mode": "live_error",
-                "error": str(exc),
-                "target_pid": pid,
-                "target_name": name,
-            }
+        # Sending a signal is not proof of termination. A qualified OS adapter
+        # with process-identity binding and postcondition checks is required.
+        raise RuntimeError("Live process termination is not qualified")
 
     def submit_receipt(
         self,
@@ -444,61 +339,52 @@ class EndpointAgent:
         return result
 
     def execute_command(self, command: dict[str, Any], client: Any = None) -> dict[str, Any]:
-        """Executes a single command from queue and produces an Ed25519 signed execution receipt."""
-        cmd_id = str(command["id"])
-        action = str(command["action"])
-        params = command.get("params") or {}
-        envelope = command.get("envelope") or {}
-        ctrl_sig = command.get("controller_signature", "")
-        org_id = envelope.get("organization_id", "")
-
-        try:
-            if action == "isolate_host":
-                result = self.isolate_host(controller_ip=params.get("controller_ip"))
-            elif action == "unisolate_host":
-                result = self.unisolate_host()
-            elif action == "terminate_process":
-                result = self.terminate_process(pid=params.get("pid"), name=params.get("name"))
-            else:
-                raise ValueError(f"Unsupported endpoint containment action: {action}")
-
-            receipt_payload = {
-                "version": "1.0",
-                "command_id": cmd_id,
-                "agent_id": self.agent_id or self.name,
-                "organization_id": org_id,
-                "action": action,
-                "status": "SUCCESS",
-                "result": result,
-                "command_signature": ctrl_sig,
-                "timestamp": time.time(),
-                "nonce": secrets.token_hex(16),
-            }
-            sig = ed25519_sign_canonical(self.private_key, receipt_payload)
-            receipt_hash = hashlib.sha256(canonical(receipt_payload).encode()).hexdigest()
-            return self.submit_receipt(
-                cmd_id, action, "SUCCESS", receipt_payload, sig, receipt_hash, result, client=client
-            )
-
-        except Exception as exc:
-            error_details = {"error": str(exc)}
-            receipt_payload = {
-                "version": "1.0",
-                "command_id": cmd_id,
-                "agent_id": self.agent_id or self.name,
-                "organization_id": org_id,
-                "action": action,
-                "status": "FAILED",
-                "result": error_details,
-                "command_signature": ctrl_sig,
-                "timestamp": time.time(),
-                "nonce": secrets.token_hex(16),
-            }
-            sig = ed25519_sign_canonical(self.private_key, receipt_payload)
-            receipt_hash = hashlib.sha256(canonical(receipt_payload).encode()).hexdigest()
-            return self.submit_receipt(
-                cmd_id, action, "FAILED", receipt_payload, sig, receipt_hash, error_details, client=client
-            )
+        """Reverify at point of use; cache the signed outcome before transport."""
+        with self._execution_lock:
+            if not self.verify_command(command, consume=False):
+                raise ValueError("Invalid or expired controller command")
+            envelope = command["envelope"]
+            cmd_id = envelope["command_id"]
+            command_hash = hashlib.sha256(canonical(envelope).encode()).hexdigest()
+            cached = self._receipts.get(cmd_id)
+            if cached and cached["command_hash"] != command_hash:
+                raise ValueError("Command ID reused with different signed content")
+            if not cached:
+                action, params = envelope["action"], envelope.get("parameters", {})
+                try:
+                    if action == "isolate_host":
+                        if set(params) - {"controller_ip"}:
+                            raise ValueError("Unsupported isolation parameters")
+                        result = self.isolate_host(controller_ip=params.get("controller_ip"))
+                    elif action == "unisolate_host":
+                        if params:
+                            raise ValueError("Unisolation does not accept parameters")
+                        result = self.unisolate_host()
+                    elif action == "terminate_process":
+                        result = self.terminate_process(pid=params.get("pid"), name=params.get("name"))
+                    else:
+                        raise ValueError("Unsupported endpoint action")
+                    status = "SUCCESS"
+                except Exception as exc:
+                    self.isolated, self.containment_state = False, "UNKNOWN"
+                    status = "FAILED"
+                    result = {"mode": "simulated" if self.simulation_mode else "live",
+                              "outcome": "FAILED", "error": type(exc).__name__,
+                              "evidence": getattr(exc, "evidence", {})}
+                receipt = {"version": "2.0", "command_id": cmd_id,
+                           "agent_id": self.agent_id or self.name,
+                           "organization_id": envelope.get("organization_id", ""),
+                           "action": action, "status": status, "result": result,
+                           "command_signature": command["controller_signature"],
+                           "timestamp": time.time(), "nonce": secrets.token_hex(16)}
+                cached = {"command_hash": command_hash, "receipt": receipt,
+                          "signature": ed25519_sign_canonical(self.private_key, receipt)}
+                self._receipts[cmd_id] = cached
+            receipt = cached["receipt"]
+        # Transport failure must not manufacture a second, contradictory outcome.
+        return self.submit_receipt(cmd_id, receipt["action"], receipt["status"], receipt,
+                                   cached["signature"], hashlib.sha256(canonical(receipt).encode()).hexdigest(),
+                                   receipt["result"], client=client)
 
     def run_cycle(self, client: Any = None) -> dict[str, Any]:
         """Runs a single poll and execution cycle."""

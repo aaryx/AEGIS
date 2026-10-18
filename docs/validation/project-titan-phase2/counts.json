@@ -1,0 +1,34 @@
+{
+  "focused-final": {
+    "tests": "163",
+    "failures": "0",
+    "errors": "0",
+    "skipped": "0",
+    "time": "77.585",
+    "passed": 163
+  },
+  "focused1": {
+    "tests": "57",
+    "failures": "1",
+    "errors": "0",
+    "skipped": "0",
+    "time": "19.270",
+    "passed": 56
+  },
+  "focused2": {
+    "tests": "82",
+    "failures": "1",
+    "errors": "0",
+    "skipped": "0",
+    "time": "34.054",
+    "passed": 81
+  },
+  "focused3": {
+    "tests": "82",
+    "failures": "0",
+    "errors": "0",
+    "skipped": "0",
+    "time": "35.183",
+    "passed": 82
+  }
+}

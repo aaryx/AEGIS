@@ -100,8 +100,8 @@ def summarize(alerts, memberships):
 
 def correlate(db, settings, principal, window_seconds):
     org = principal.organization_id
-    # A separate transaction lock avoids reversing audit's AuditHead -> Organization
-    # lock order. Never lock Organization before writing an audit entry.
+    # Lock hierarchy: 1. Organization -> 2. AuditHead -> 3. Resource rows -> 4. WindowState
+    # Advisory xact lock protects storyline graph computation without row-level lock contention.
     if db.get_bind().dialect.name == "postgresql":
         db.execute(
             text("SELECT pg_advisory_xact_lock(:key)"), {"key": int(digest(["storyline-v1", org])[:15], 16)}

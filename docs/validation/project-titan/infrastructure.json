@@ -1,0 +1,11 @@
+{
+  "python": "3.14.3",
+  "memory_available_mb": 1283,
+  "memory_total_mb": 7518,
+  "docker_cli_available": true,
+  "ports": {
+    "5432": "unreachable",
+    "6379": "unreachable",
+    "9200": "unreachable"
+  }
+}

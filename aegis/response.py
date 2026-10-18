@@ -3,7 +3,7 @@ from typing import Protocol
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from aegis.db import AuditLog, Collector, Entity, Notification, PlaybookExecution, User
+from aegis.db import Agent, AuditLog, Collector, Entity, Notification, PlaybookExecution, User
 from aegis.investigation import owned
 from aegis.parsers import digest
 from aegis.security import audit
@@ -58,10 +58,13 @@ class LocalResponseProvider:
 
 
 def request_execution(db, settings, principal, data, idempotency_key, request=None):
+    from aegis.soar import lock_tenant
+    lock_tenant(db, principal.organization_id)
     key = digest([principal.organization_id, idempotency_key])
     existing = db.scalar(select(PlaybookExecution).where(PlaybookExecution.idempotency_key == key))
     if existing:
-        if existing.action != data.action or existing.target != data.target:
+        if (existing.action != data.action or existing.target != data.target
+                or (existing.result or {}).get("params", {}) != data.params):
             raise HTTPException(409, "Idempotency key belongs to a different request")
         return existing
     if data.action in HIGH_IMPACT:
@@ -111,6 +114,8 @@ def request_execution(db, settings, principal, data, idempotency_key, request=No
 
 
 def execute(db, settings, principal, execution_id, request=None):
+    from aegis.soar import lock_tenant
+    lock_tenant(db, principal.organization_id)
     execution = db.scalar(
         select(PlaybookExecution)
         .where(
@@ -121,9 +126,9 @@ def execute(db, settings, principal, execution_id, request=None):
     )
     if not execution:
         raise HTTPException(404, "Execution does not exist")
-    if execution.status in {"VERIFIED", "DISPATCHED"}:
+    if execution.status in {"VERIFIED", "SIMULATED", "ENFORCED", "RELEASED", "UNKNOWN", "FAILED"}:
         return execution
-    if execution.status not in {"REQUESTED", "APPROVED"}:
+    if execution.status not in {"REQUESTED", "APPROVED", "DISPATCHED"}:
         raise HTTPException(409, "Execution requires approval or is not executable")
     if execution.action in HIGH_IMPACT and (
         not execution.approved_by or execution.approved_by == execution.requested_by
@@ -134,6 +139,10 @@ def execute(db, settings, principal, execution_id, request=None):
 
         from aegis.security import ROLES
 
+        requester = db.get(User, execution.requested_by)
+        if (not requester or not requester.active or requester.organization_id != principal.organization_id
+                or "playbooks.execute" not in ROLES[requester.role]):
+            raise HTTPException(403, "Requester is no longer authorized")
         approver = db.get(User, execution.approved_by)
         approval = db.scalar(
             select(AuditLog)
@@ -148,6 +157,7 @@ def execute(db, settings, principal, execution_id, request=None):
         if (
             not approver
             or not approver.active
+            or approver.organization_id != principal.organization_id
             or "playbooks.approve" not in ROLES[approver.role]
             or not approval
         ):
@@ -160,6 +170,18 @@ def execute(db, settings, principal, execution_id, request=None):
         if (datetime.now(UTC) - approved_at).total_seconds() > settings.response_approval_seconds:
             raise HTTPException(409, "Approval expired; submit a fresh request")
 
+    if execution.status == "DISPATCHED":
+        return execution
+    if execution.action in {"isolate_host", "unisolate_host", "terminate_process"}:
+        conflict = db.scalar(select(PlaybookExecution.id).where(
+            PlaybookExecution.organization_id == principal.organization_id,
+            PlaybookExecution.target == execution.target,
+            PlaybookExecution.id != execution.id,
+            PlaybookExecution.status.in_(["DISPATCHED", "EXECUTING"]),
+        ).limit(1))
+        if conflict:
+            raise HTTPException(409, "Endpoint already has an unresolved command")
+
     entity = db.get(Entity, execution.target) if execution.action in HIGH_IMPACT else None
     agent = None
     if entity and entity.type == "host":
@@ -171,8 +193,18 @@ def execute(db, settings, principal, execution_id, request=None):
             )
         )
 
-    if agent and execution.action in {"isolate_host", "unisolate_host", "terminate_process"}:
+    if entity and agent and execution.action in {"isolate_host", "unisolate_host", "terminate_process"}:
         execution.status = "DISPATCHED"
+        if execution.action in {"isolate_host", "unisolate_host"}:
+            entity.attributes = dict(entity.attributes or {}) | {
+                "isolation_status": "UNKNOWN", "containment_execution_id": execution.id,
+                "containment_semantics_version": 2,
+            }
+            endpoint = db.scalar(select(Agent).where(
+                Agent.organization_id == principal.organization_id, Agent.name == agent.name,
+            ))
+            if endpoint:
+                endpoint.isolation_status = "UNKNOWN"
         execution.result = (execution.result or {}) | {
             "verified": False,
             "scope": "dispatched-to-agent",
@@ -198,7 +230,12 @@ def execute(db, settings, principal, execution_id, request=None):
     result = LocalResponseProvider().execute(
         db, principal.organization_id, execution.action, execution.target
     )
-    execution.result, execution.status = result, "VERIFIED"
+    if execution.action in {"isolate_host", "unisolate_host"}:
+        result = result | {"semantics_version": 2, "containment_status": "UNKNOWN", "verified": False}
+        execution.status = "UNKNOWN"
+    else:
+        execution.status = "VERIFIED"
+    execution.result = result | {"params": (execution.result or {}).get("params", {})}
     execution.revision += 1
     audit(
         db,

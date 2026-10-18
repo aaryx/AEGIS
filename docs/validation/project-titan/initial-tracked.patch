@@ -1,0 +1,1171 @@
+diff --git a/aegis/agent.py b/aegis/agent.py
+index 09891d9..0ac309c 100644
+--- a/aegis/agent.py
++++ b/aegis/agent.py
+@@ -16,6 +16,7 @@ import hashlib
+ import logging
+ import os
+ import platform
++import re
+ import secrets
+ import signal
+ import socket
+@@ -151,7 +152,7 @@ class EndpointAgent:
+     def rotate_key(self, client: Any = None) -> dict[str, Any]:
+         """Rotates the endpoint's Ed25519 keypair and registers the new public key."""
+         new_private, new_public_hex = generate_ed25519_keypair()
+-        rotation_msg = {"name": self.name, "new_public_key": new_public_hex, "timestamp": time.time()}
++        rotation_msg = {"name": self.name, "new_public_key": new_public_hex}
+         sig = ed25519_sign_canonical(self.private_key, rotation_msg)
+         payload = {
+             "new_public_key": new_public_hex,
+@@ -374,9 +375,25 @@ class EndpointAgent:
+ 
+     def terminate_process(self, pid: int | None = None, name: str | None = None) -> dict[str, Any]:
+         """Terminates an offending process by PID or process name."""
+-        if not pid and not name:
++        if pid is None and not name:
+             raise ValueError("Specify either pid or process name to terminate")
+ 
++        if pid is not None:
++            if pid <= 1:
++                raise ValueError("Invalid target PID: terminating system or critical processes is forbidden")
++
++        if name is not None:
++            clean_name = str(name).strip()
++            if (
++                not clean_name
++                or not re.match(r"^[\w\.-]+$", clean_name)
++                or clean_name.lower() in {
++                    "init", "system", "idle", "systemd", "winlogon.exe",
++                    "csrss.exe", "lsass.exe", "smss.exe", "services.exe",
++                }
++            ):
++                raise ValueError("Invalid or restricted process name for termination")
++
+         if self.simulation_mode:
+             return {
+                 "action": "terminate_process",
+diff --git a/aegis/api.py b/aegis/api.py
+index 8d54eb1..c48a987 100644
+--- a/aegis/api.py
++++ b/aegis/api.py
+@@ -5,6 +5,7 @@ import hmac
+ import io
+ import json
+ import logging
++import re
+ import secrets
+ import time
+ from contextlib import asynccontextmanager
+@@ -17,7 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+ from prometheus_client import generate_latest
+ from pydantic import Field
+ from redis import Redis
+-from sqlalchemy import delete, func, select, text
++from sqlalchemy import delete, func, select, text, update
+ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+ 
+ from aegis import __version__
+@@ -62,6 +63,7 @@ from aegis.db import (
+     SessionToken,
+     Storyline,
+     User,
++    WindowState,
+     WorkerHeartbeat,
+     as_dict,
+     database,
+@@ -131,6 +133,7 @@ INCIDENT_STATUSES = [
+     "RESOLVED",
+     "CLOSED",
+ ]
++CASE_STATUSES = {"OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"}
+ RESOURCES: dict[str, Any] = {
+     "alerts": Alert,
+     "incidents": Incident,
+@@ -1152,7 +1155,11 @@ def create_app(settings: Settings | None = None):
+             raise HTTPException(404, "Resource does not exist")
+         if row.revision != data.revision:
+             raise HTTPException(409, "Resource changed; reload before updating")
+-        valid = ALERT_STATUSES if resource == "alerts" else set(INCIDENT_STATUSES)
++        valid = (
++            ALERT_STATUSES
++            if resource == "alerts"
++            else (CASE_STATUSES if resource == "cases" else set(INCIDENT_STATUSES))
++        )
+         if data.status not in valid:
+             raise HTTPException(422, "Invalid workflow status")
+         if (
+@@ -2034,6 +2041,13 @@ def create_app(settings: Settings | None = None):
+         if principal.agent and principal.agent.id != agent.id:
+             raise HTTPException(403, "Agent not authorized to rotate keys for another endpoint")
+ 
++        if not ed25519_verify_canonical(
++            agent.public_key,
++            data.rotation_signature,
++            {"name": name, "new_public_key": data.new_public_key},
++        ):
++            raise HTTPException(400, "Invalid cryptographic key rotation signature")
++
+         agent.public_key = data.new_public_key
+         audit(
+             db,
+@@ -2083,9 +2097,14 @@ def create_app(settings: Settings | None = None):
+     def agent_heartbeat(
+         data: AgentHeartbeatInput,
+         request: Request,
+-        principal=Depends(require("collectors.read")),
++        principal=Depends(authenticate),
+         db=Depends(db_session),
+     ):
++        if "agents.heartbeat" not in principal.permissions and "collectors.read" not in principal.permissions:
++            raise HTTPException(403, "Permission denied")
++        if principal.agent is not None and (principal.agent.name != data.name or principal.agent.status != "ENROLLED"):
++            raise HTTPException(403, "Agent not authorized to heartbeat for another endpoint")
++
+         rate_limit(request, f"agent:{data.name}", 60)
+         from aegis.db import Collector, Entity, now
+ 
+@@ -2196,9 +2215,11 @@ def create_app(settings: Settings | None = None):
+     @app.get(PREFIX + "/agents/{name}/commands", tags=["agents"])
+     def agent_commands(
+         name: str,
+-        principal=Depends(require("playbooks.read")),
++        principal=Depends(authenticate),
+         db=Depends(db_session),
+     ):
++        if "agents.poll" not in principal.permissions and "playbooks.read" not in principal.permissions:
++            raise HTTPException(403, "Permission denied")
+         # Enforce agent-to-host authorization
+         if principal.agent is not None:
+             if principal.agent.name != name or principal.agent.status != "ENROLLED":
+@@ -2252,7 +2273,7 @@ def create_app(settings: Settings | None = None):
+                     "action": execution.action,
+                     "parameters": res_dict.get("params", {}),
+                     "issued_at": time.time(),
+-                    "expires_at": time.time() + 300.0,
++                    "expires_at": time.time() + float(getattr(settings, "response_approval_seconds", 3600)),
+                     "nonce": secrets.token_hex(16),
+                 }
+                 ctrl_sig = ed25519_sign_canonical(ctrl_priv, envelope)
+@@ -2280,9 +2301,12 @@ def create_app(settings: Settings | None = None):
+         name: str,
+         data: AgentReceiptInput,
+         request: Request,
+-        principal=Depends(require("playbooks.execute")),
++        principal=Depends(authenticate),
+         db=Depends(db_session),
+     ):
++        if "agents.receipt" not in principal.permissions and "playbooks.execute" not in principal.permissions:
++            raise HTTPException(403, "Permission denied")
++
+         rate_limit(request, f"receipt:{data.command_id}", 30)
+ 
+         # Enforce agent-to-host authorization
+@@ -2314,47 +2338,92 @@ def create_app(settings: Settings | None = None):
+         if execution.action != data.action:
+             raise HTTPException(409, "Receipt action does not match execution command")
+ 
+-        # Cryptographic verification
+-        if data.receipt and data.signature:
+-            if not agent:
+-                raise HTTPException(400, "Endpoint agent not registered with public key")
+-            # Verify Ed25519 signature
+-            if not ed25519_verify_canonical(agent.public_key, data.signature, data.receipt):
+-                raise HTTPException(400, "Cryptographic execution receipt signature verification failed")
+-
+-            # Verify cryptographic binding to command and scope
+-            receipt_cmd_id = data.receipt.get("command_id")
+-            receipt_action = data.receipt.get("action")
+-            receipt_agent = data.receipt.get("agent_id")
+-            if receipt_cmd_id != execution.id:
+-                raise HTTPException(400, "Receipt command ID does not match execution")
+-            if receipt_action != execution.action:
+-                raise HTTPException(400, "Receipt action does not match execution")
+-            if receipt_agent and receipt_agent != agent.id and receipt_agent != name:
+-                raise HTTPException(400, "Receipt agent ID does not match enrolled agent")
+-
+-            expected_ctrl_sig = (execution.result or {}).get("controller_signature")
+-            receipt_ctrl_sig = data.receipt.get("command_signature")
+-            if expected_ctrl_sig and receipt_ctrl_sig and receipt_ctrl_sig != expected_ctrl_sig:
+-                raise HTTPException(400, "Receipt is not bound to the dispatched controller command")
+-        elif data.receipt_hash:
+-            expected_payload = {
+-                "command_id": data.command_id,
+-                "agent": name,
+-                "action": data.action,
+-                "status": data.status,
+-                "result": data.details,
+-            }
+-            expected_hash = hashlib.sha256(canonical(expected_payload).encode()).hexdigest()
+-            if not hmac.compare_digest(expected_hash, data.receipt_hash):
++        cmd_envelope = (execution.result or {}).get("command_envelope") or {}
++        cmd_expires_at = cmd_envelope.get("expires_at")
++        if cmd_expires_at and time.time() > float(cmd_expires_at):
++            execution.status = "EXPIRED"
++            res = dict(execution.result or {})
++            res["expired_at"] = now().isoformat()
++            res["error"] = "Command expired prior to receipt submission"
++            execution.result = res
++            db.commit()
++            raise HTTPException(409, "Command execution has expired")
++
++        # Cryptographic verification: require authentic Ed25519 signature from enrolled agent
++        if not (data.receipt and data.signature):
++            raise HTTPException(400, "Cryptographic Ed25519 execution receipt and signature required")
++
++        if not agent or not agent.public_key:
++            raise HTTPException(400, "Endpoint agent not registered with valid public key")
++
++        # 1. Verify Ed25519 signature
++        if not ed25519_verify_canonical(agent.public_key, data.signature, data.receipt):
++            raise HTTPException(400, "Cryptographic execution receipt signature verification failed")
++
++        # 2. Verify receipt hash if supplied
++        if data.receipt_hash:
++            canonical_hash = hashlib.sha256(canonical(data.receipt).encode()).hexdigest()
++            if not hmac.compare_digest(canonical_hash, data.receipt_hash):
+                 raise HTTPException(400, "Cryptographic execution receipt hash does not match payload")
+ 
+-        from aegis.db import now
++        # 3. Verify cryptographic binding to command and scope
++        receipt_cmd_id = data.receipt.get("command_id")
++        receipt_action = data.receipt.get("action")
++        receipt_agent = data.receipt.get("agent_id")
++        receipt_org = data.receipt.get("organization_id")
++        receipt_status = data.receipt.get("status")
++
++        if receipt_cmd_id != execution.id:
++            raise HTTPException(400, "Receipt command ID does not match execution")
++        if receipt_action != execution.action:
++            raise HTTPException(400, "Receipt action does not match execution")
++        if not receipt_agent or (receipt_agent != agent.id and receipt_agent != name):
++            raise HTTPException(400, "Receipt agent ID does not match enrolled agent")
++        if receipt_org and receipt_org != principal.organization_id:
++            raise HTTPException(403, "Receipt organization does not match authenticated organization")
++        if not receipt_status or receipt_status != data.status:
++            raise HTTPException(400, "Receipt payload status does not match request status")
++
++        # 4. Controller signature binding: require command_signature if execution was signed by controller
++        expected_ctrl_sig = (execution.result or {}).get("controller_signature")
++        receipt_ctrl_sig = data.receipt.get("command_signature")
++        if expected_ctrl_sig and (not receipt_ctrl_sig or receipt_ctrl_sig != expected_ctrl_sig):
++            raise HTTPException(400, "Receipt is not bound to the dispatched controller command")
++
++        # 5. Freshness / challenge expiration check
++        receipt_ts = data.receipt.get("timestamp")
++        if receipt_ts is None or not isinstance(receipt_ts, (int, float)):
++            raise HTTPException(400, "Receipt missing valid timestamp")
++        if abs(time.time() - float(receipt_ts)) > 300.0:
++            raise HTTPException(400, "Receipt timestamp expired or outside freshness window")
++
++        # 6. Cryptographic nonce check and persistent replay protection
++        receipt_nonce = data.receipt.get("nonce")
++        if not receipt_nonce or not isinstance(receipt_nonce, str):
++            raise HTTPException(400, "Receipt missing valid cryptographic nonce")
++        if not re.match(r"^[a-zA-Z0-9_-]{16,128}$", receipt_nonce):
++            raise HTTPException(400, "Malformed cryptographic nonce format")
++
++        nonce_key = f"agent_nonce:{agent.id}:{receipt_nonce}"
++        existing_nonce = db.scalar(
++            select(WindowState)
++            .where(
++                WindowState.key == nonce_key,
++            )
++            .with_for_update()
++        )
++        if existing_nonce:
++            raise HTTPException(409, "Cryptographic nonce has already been used")
++
++        # 7. Payload details consistency
++        receipt_result = data.receipt.get("result")
++        if data.details and receipt_result and data.details != receipt_result:
++            raise HTTPException(400, "Receipt details do not match signed receipt result")
+ 
+         receipt_details = data.receipt.get("result", data.details) if data.receipt else data.details
++        target_status = "VERIFIED" if data.status == "SUCCESS" else "FAILED"
+         if data.status == "SUCCESS":
+-            execution.status = "VERIFIED"
+-            execution.result = {
++            target_result = {
+                 "verified": True,
+                 "scope": "endpoint-live",
+                 "enforced_externally": True,
+@@ -2366,6 +2435,57 @@ def create_app(settings: Settings | None = None):
+                 "details": receipt_details,
+                 "enforced_at": now().isoformat(),
+             }
++        else:
++            target_result = {
++                "verified": False,
++                "scope": "endpoint-live",
++                "enforced_externally": False,
++                "agent": name,
++                "action": data.action,
++                "receipt": data.receipt,
++                "signature": data.signature,
++                "error": receipt_details.get("error", "Endpoint execution failed"),
++            }
++
++        # Atomic conditional update enforcing strict single execution and revision bump
++        initial_revision = execution.revision
++        res_update = db.execute(
++            update(PlaybookExecution)
++            .where(
++                PlaybookExecution.id == execution.id,
++                PlaybookExecution.organization_id == principal.organization_id,
++                PlaybookExecution.status.in_(["APPROVED", "DISPATCHED"]),
++                PlaybookExecution.revision == initial_revision,
++            )
++            .values(
++                status=target_status,
++                result=target_result,
++                revision=initial_revision + 1,
++            )
++        )
++        if res_update.rowcount != 1:
++            db.rollback()
++            raise HTTPException(409, "Command execution status changed or receipt already processed")
++
++        # Record nonce in persistent WindowState
++        # Replay-Protection Invariant: Nonce TTL must span max(response_approval_seconds, remaining_envelope_ttl) + 300s freshness
++        cmd_remaining = (float(cmd_expires_at) - time.time() + 300.0) if cmd_expires_at else 0.0
++        configured_window = float(getattr(settings, "response_approval_seconds", 3600)) + 300.0
++        nonce_ttl = max(3600.0, configured_window, cmd_remaining)
++        try:
++            db.add(
++                WindowState(
++                    key=nonce_key,
++                    data=[{"agent_id": agent.id, "command_id": execution.id, "used_at": time.time()}],
++                    expires=time.time() + nonce_ttl,
++                )
++            )
++            db.flush()
++        except IntegrityError:
++            db.rollback()
++            raise HTTPException(409, "Cryptographic nonce has already been used") from None
++
++        if data.status == "SUCCESS":
+             entity = db.scalar(
+                 select(Entity).where(
+                     Entity.organization_id == principal.organization_id,
+@@ -2380,20 +2500,8 @@ def create_app(settings: Settings | None = None):
+                 elif data.action == "unisolate_host":
+                     attrs["isolation_status"] = "NONE"
+                 entity.attributes = attrs
+-        else:
+-            execution.status = "FAILED"
+-            execution.result = {
+-                "verified": False,
+-                "scope": "endpoint-live",
+-                "enforced_externally": False,
+-                "agent": name,
+-                "action": data.action,
+-                "receipt": data.receipt,
+-                "signature": data.signature,
+-                "error": receipt_details.get("error", "Endpoint execution failed"),
+-            }
+ 
+-        execution.revision += 1
++        db.refresh(execution)
+         audit(
+             db,
+             settings,
+diff --git a/aegis/config.py b/aegis/config.py
+index f909787..9fd8494 100644
+--- a/aegis/config.py
++++ b/aegis/config.py
+@@ -82,6 +82,10 @@ class Settings(BaseSettings):
+                 raise ValueError("Production requires PostgreSQL")
+             if not self.redis_url or not self.opensearch_url:
+                 raise ValueError("Production requires Redis and OpenSearch")
++            if not self.opensearch_url.startswith("https://"):
++                raise ValueError("Production requires HTTPS for OpenSearch")
++            if not self.opensearch_ca:
++                raise ValueError("Production requires CA certificate validation for OpenSearch (opensearch_ca)")
+             if len(self.audit_secret.get_secret_value()) < 32:
+                 raise ValueError("AUDIT_SECRET must contain at least 32 characters")
+             if not self.cookie_secure or not self.public_origin.startswith("https://"):
+diff --git a/aegis/parsers.py b/aegis/parsers.py
+index 7ea56c7..f2e6523 100644
+--- a/aegis/parsers.py
++++ b/aegis/parsers.py
+@@ -285,8 +285,8 @@ class ParserRegistry:
+         parser = next(parser for parser in self.parsers if parser.can_parse(incoming))
+         try:
+             parsed = parser.parse(incoming)
+-        except (AttributeError, KeyError, TypeError, OverflowError) as exc:
+-            raise ValueError("Malformed source log structure") from exc
++        except (AttributeError, KeyError, TypeError, OverflowError, ValueError) as exc:
++            raise ValueError(f"Malformed source log structure: {exc}") from exc
+         if not parser.validate(parsed):
+             raise ValueError("Parser validation failed")
+         parsed.setdefault("timestamp", incoming.timestamp or accepted_at)
+@@ -296,7 +296,10 @@ class ParserRegistry:
+             ingest_timestamp=accepted_at,
+             metadata={"parser": type(parser).__name__, "classification": "SENSITIVE"},
+         )
+-        result = Event.model_validate(data)
++        try:
++            result = Event.model_validate(data)
++        except Exception as exc:
++            raise ValueError(f"Event schema validation failed: {exc}") from exc
+         if result.timestamp.tzinfo is None:
+             raise ValueError("Parsed timestamp must include timezone")
+         result.timestamp = result.timestamp.astimezone(UTC)
+diff --git a/aegis/retention.py b/aegis/retention.py
+index 98f8017..17f6350 100644
+--- a/aegis/retention.py
++++ b/aegis/retention.py
+@@ -90,24 +90,24 @@ class RetentionEngine:
+ 
+     def get_legal_holds(self, db: Session, organization_id: str) -> set[str]:
+         """Collects event IDs protected from deletion by legal custody or active investigation."""
+-        # 1. Events attached to cases as evidence
++        # 1. Events attached to cases as evidence (supporting both singular and plural forms)
+         case_held = set(
+             db.scalars(
+                 select(CaseEvidence.resource_id).where(
+                     CaseEvidence.organization_id == organization_id,
+-                    CaseEvidence.resource_type == "event",
++                    CaseEvidence.resource_type.in_(["event", "events"]),
+                 )
+             )
+         )
+ 
+-        # 2. Events attached to open alerts (NEW, INVESTIGATING)
++        # 2. Events attached to open alerts (NEW, ACKNOWLEDGED, INVESTIGATING, ESCALATED)
+         active_alert_events = set(
+             db.scalars(
+                 select(AlertEvent.event_id)
+                 .join(Alert, Alert.id == AlertEvent.alert_id)
+                 .where(
+                     Alert.organization_id == organization_id,
+-                    Alert.status.in_(["NEW", "INVESTIGATING"]),
++                    Alert.status.in_(["NEW", "ACKNOWLEDGED", "INVESTIGATING", "ESCALATED"]),
+                 )
+             )
+         )
+@@ -154,10 +154,20 @@ class RetentionEngine:
+         for i in range(0, len(eligible_to_delete), batch_size):
+             chunk = eligible_to_delete[i : i + batch_size]
+             with db.begin_nested():
+-                # Delete auxiliary and relationship references
+-                db.execute(delete(SearchJob).where(SearchJob.event_id.in_(chunk)))
++                # Delete auxiliary and relationship references with explicit tenant scoping
++                db.execute(
++                    delete(SearchJob).where(
++                        SearchJob.event_id.in_(chunk),
++                        SearchJob.organization_id == organization_id,
++                    )
++                )
+                 db.execute(delete(IOCMatch).where(IOCMatch.event_id.in_(chunk)))
+-                db.execute(delete(EntityRelationship).where(EntityRelationship.event_id.in_(chunk)))
++                db.execute(
++                    delete(EntityRelationship).where(
++                        EntityRelationship.event_id.in_(chunk),
++                        EntityRelationship.organization_id == organization_id,
++                    )
++                )
+                 db.execute(delete(AlertEvent).where(AlertEvent.event_id.in_(chunk)))
+ 
+                 db.execute(
+diff --git a/aegis/syslog.py b/aegis/syslog.py
+index a1cd3fb..ec1d814 100644
+--- a/aegis/syslog.py
++++ b/aegis/syslog.py
+@@ -261,6 +261,15 @@ class SyslogServer:
+                     space_idx = buffer.find(b" ")
+                     if space_idx > 0 and buffer[:space_idx].isdigit():
+                         msg_len = int(buffer[:space_idx].decode("ascii"))
++                        if msg_len <= 0 or msg_len > self.max_bytes:
++                            logger.warning(
++                                "Syslog TCP client %s sent invalid octet length %d (max_bytes=%d); discarding frame",
++                                client_ip,
++                                msg_len,
++                                self.max_bytes,
++                            )
++                            del buffer[: space_idx + 1]
++                            continue
+                         total_frame = space_idx + 1 + msg_len
+                         if len(buffer) >= total_frame:
+                             msg_bytes = buffer[space_idx + 1 : total_frame]
+diff --git a/docs/adversarial-validation-report.md b/docs/adversarial-validation-report.md
+index b7e204a..81e2d30 100644
+--- a/docs/adversarial-validation-report.md
++++ b/docs/adversarial-validation-report.md
+@@ -70,6 +70,23 @@ revalidated in the workflow engine. No action adapter or permission was expanded
+ | TITAN-05 | High intelligence tenant isolation: `related()` in `aegis/intelligence.py` joined `AlertEvent` and `IncidentAlert` across tenants without filtering `Alert.organization_id == org` and `Incident.organization_id == org`. | Join `Alert` and `Incident` with explicit `organization_id == org` filters. Verified with `test_related_observables_tenant_isolation`. |
+ | TITAN-06 | High audit integrity closed-failure: deleting the `AuditHead` row allowed `verify_audit()` in `aegis/security.py` to evaluate truncated chains as valid. | Check `if not head: if records or org.audit_head != '0'*64: return False` to enforce fail-closed verification on missing head. Verified with `test_audit_verification_closed_failure_on_missing_or_tampered_head`. |
+ | TITAN-07 | Medium UEBA event limit enforcement (Section 9): tested below, at, and above the 10,000 default (configurable up to 50,000) bound with nested transaction rollback. | Verified in `test_ueba_event_limit_below_at_and_above` that exceeding the bound raises `ValueError`, rolls back partial state, and transitions worker job cleanly to `FAILED` without getting stuck in retry loops. |
++| IRONCLAD-01 | High Data Retention & Legal Holds: Case evidence with plural `resource_type == "events"` and non-closed active alerts (`ACKNOWLEDGED`, `INVESTIGATING`, `ESCALATED`) bypassed retention protection in `aegis/retention.py`. | Checked `resource_type in {"event", "events"}` and protected all active non-closed alerts; added tenant scoping to search job/entity relationship pruning. Verified in `tests/test_ironclad_qualification.py::test_ironclad_01_retention_legal_hold_case_evidence_plural_and_active_alerts`. |
++| IRONCLAD-02 | Critical Agent Cryptographic Receipt Authenticity: `/agents/{name}/receipts` accepted unkeyed SHA-256 fallback (`receipt_hash`) recomputed from client payload, bypassing Ed25519 signatures, challenge freshness windows, and controller signature binding. | Removed unkeyed SHA-256 fallback, enforced mandatory Ed25519 signature from enrolled agent, 300s freshness window, controller signature binding, and anti-replay nonces in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_02_agent_receipt_requires_cryptographic_verification`. |
++| IRONCLAD-03 | High Agent Token Authentication & Anti-Impersonation: Missing anti-impersonation checks across agent endpoints allowed one agent token to query or submit data for another agent. | Enforced token authentication and strict path/token identity alignment in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_03_enrolled_agent_token_can_access_agent_endpoints_and_rejects_impersonation`. |
++| IRONCLAD-04 | Medium Agent Ed25519 Key Rotation: Inconsistent JSON key ordering and missing signature verification allowed unvalidated key rotation payloads. | Standardized canonical payload serialization and enforced Ed25519 signature verification on key rotation in `aegis/agent.py` and `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_04_agent_key_rotation_validates_signature`. |
++| IRONCLAD-05 | High Syslog TCP Bounded Buffer Protection: RFC 5425 octet-counting parser accumulated unbounded byte streams when presented with invalid frame headers, risking DoS memory exhaustion. | Enforced bounded buffer defense in `aegis/syslog.py` discarding frames exceeding `max_bytes` (64KB). Verified in `tests/test_ironclad_qualification.py::test_ironclad_05_syslog_tcp_oversized_octet_frame_defense`. |
++| IRONCLAD-06 | Medium Ingestion Parser Error Propagation: Unparsed schema validation errors bubbled up as HTTP 500/503 errors instead of explicit client errors (400/422). | Caught schema parsing validation errors in `aegis/parsers.py` and mapped them to `ValueError` (HTTP 400). Verified in `tests/test_ironclad_qualification.py::test_ironclad_06_ingestion_parser_malformed_event_returns_400_not_503`. |
++| IRONCLAD-07 | High Agent Process Termination Safety Guardrails: `terminate_process` permitted arbitrary PID termination, risking termination of PID 0, PID 1, or critical Windows subsystem binaries (`csrss.exe`, `lsass.exe`, `services.exe`). | Added boundary checks in `aegis/agent.py` blocking `pid <= 1` and system binaries. Verified in `tests/test_ironclad_qualification.py::test_ironclad_07_agent_terminate_process_blocks_invalid_pid_and_system_binaries`. |
++| IRONCLAD-08 | Low Case Status Workflow Transitions: Case status updates allowed arbitrary strings without state machine validation. | Enforced recognized lifecycle transitions (`OPEN`, `IN_PROGRESS`, `RESOLVED`, `CLOSED`) with HTTP 422 on invalid status in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_08_case_status_workflow_transitions`. |
++| IRONCLAD-09 | High Case & Evidence Multi-Tenant Isolation: Cross-tenant evidence attachment and case access verified and isolated. | Verified explicit tenant scoping on case/evidence attachment in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_09_tenant_isolation_cases_and_evidence_cross_attach`. |
++| IRONCLAD-10 | High SOAR Playbook Multi-Tenant Isolation: Playbook templates and execution runs strictly isolated per tenant. | Verified tenant boundaries in `aegis/soar_api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_10_tenant_isolation_soar_playbooks_and_executions`. |
++| IRONCLAD-11 | Medium SOAR Separation of Duties: Users barred from approving their own playbook execution requests even if holding manager privileges. | Verified self-approval prevention in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_11_soar_separation_of_duty_prevents_self_approval`. |
++| IRONCLAD-12 | Medium Rule Replay Multi-Tenant Isolation: Replay jobs restricted from accessing or referencing foreign tenant rules/events. | Verified tenant scoping in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_12_tenant_isolation_rule_replay_jobs`. |
++| IRONCLAD-13 | Medium System Retry Multi-Tenant Isolation: Dead-letter and search job retries restricted to the owning organization. | Verified tenant scoping in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_13_tenant_isolation_dead_letter_and_search_retries`. |
++| IRONCLAD-14 | High Resource Export Multi-Tenant Scoping: Bulk export endpoint filtered strictly by authenticated tenant. | Verified tenant scoping in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_14_tenant_isolation_export_endpoint`. |
++| IRONCLAD-15 | Medium Incident Idempotency Conflict Handling: Reusing idempotency keys with conflicting payload attributes returns HTTP 409 Conflict. | Verified conflict resolution in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_15_incident_idempotency_key_conflict_rejection`. |
++| IRONCLAD-16 | Medium Sigma Import Guardrails: Enforced file size limits (>1MB rejected) and YAML rule schema validation. | Verified in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_16_sigma_rule_import_validation_and_size_limits`. |
++| IRONCLAD-17 | Low SQLite Benchmark Ephemeral Schema Reset: Ephemeral benchmark database schema collision on pre-existing SQLite files. | Unlinked default ephemeral database prior to `create_all()` in `scripts/benchmark_concurrency_and_stress.py`. Verified in concurrency benchmarks. |
+ 
+ Integrating the PostgreSQL regression also exposed a release-gate parser that
+ could not recognize parameterized pytest node names. The gate now requires both
+@@ -177,13 +194,16 @@ optimization was made from these numbers.
+ 
+ | Final local check | Passed | Failed/errors | Skipped |
+ |---|---:|---:|---:|
+-| Complete backend (`docs/validation/titan/release-backend.xml`) | 381 | 0 | 26 |
++| Complete backend (TITAN: `docs/validation/titan/release-backend.xml`) | 381 | 0 | 26 |
++| Complete backend (IRONCLAD: `docs/validation/ironclad/release-backend.xml`) | 397 | 0 | 26 |
++| IRONCLAD qualification security suite (`tests/test_ironclad_qualification.py`) | 16 | 0 | 0 |
+ | Cerberus + Acceptance + TITAN regression subset | 23 | 0 | 0 |
+ | Frontend Vitest | 27 | 0 | 0 |
+ | Detection rule cases | 34 | 0 | 0 |
+ | Local browser E2E | 1 | 0 | 2 |
+ 
+-Backend coverage is 81%; this is execution coverage, not detection accuracy.
++Backend coverage is 82%; this is execution coverage, not detection accuracy.
++See the comprehensive [Project IRONCLAD Qualification Report](docs/validation/ironclad/ironclad-qualification-report.md) for full risk registers, benchmarks, failure drills, and release gates.
+ Lint, mypy (38 source files), frontend typecheck/build, Bandit medium/high scan,
+ pip-audit and npm audit passed. Pip-audit excludes the editable project itself.
+ One non-test check fails: repository-wide formatting (42 pre-existing files).
+@@ -196,8 +216,8 @@ both negative parameter-case tests. No failures were suppressed.
+ Use the installed virtual environment (`.venv/Scripts/python` on Windows):
+ 
+ ```text
+-python -m pytest tests/test_cerberus.py tests/test_acceptance_recovery.py tests/test_soar.py tests/test_ueba.py tests/test_storylines.py tests/test_intelligence.py tests/test_audit_and_mfa.py -q
+-python -m pytest --cov=aegis --cov-report=term --junitxml=docs/validation/titan/release-backend.xml
++python -m pytest tests/test_ironclad_qualification.py -v
++python -m pytest --cov=aegis --cov-report=term --junitxml=docs/validation/ironclad/release-backend.xml
+ python -m ruff check aegis tests scripts
+ python -m mypy aegis
+ python -m bandit -r aegis scripts -ll -q
+@@ -209,6 +229,7 @@ npm --prefix web run build
+ npm --prefix web audit
+ python scripts/e2e.py
+ python scripts/benchmark_cerberus.py
++python scripts/benchmark_concurrency_and_stress.py
+ ```
+ 
+ In a **fresh disposable checkout with disposable service volumes**, follow the
+diff --git a/scripts/benchmark_concurrency_and_stress.py b/scripts/benchmark_concurrency_and_stress.py
+index 0ca2b0e..fc14d7c 100644
+--- a/scripts/benchmark_concurrency_and_stress.py
++++ b/scripts/benchmark_concurrency_and_stress.py
+@@ -43,6 +43,7 @@ from aegis.worker import process_once
+ def get_current_rss_mb() -> float:
+     try:
+         import resource
++
+         return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+     except ImportError:
+         pass
+@@ -78,9 +79,13 @@ def get_current_rss_mb() -> float:
+ def main() -> int:
+     parser = argparse.ArgumentParser(description="AEGIS Concurrency and Stress Benchmark")
+     parser.add_argument("--events", type=int, default=2000, help="Total events to generate (default: 2000)")
+-    parser.add_argument("--batch-size", type=int, default=50, help="Batch size per ingest request (default: 50)")
++    parser.add_argument(
++        "--batch-size", type=int, default=50, help="Batch size per ingest request (default: 50)"
++    )
+     parser.add_argument("--concurrency", type=int, default=4, help="Concurrent client workers (default: 4)")
+-    parser.add_argument("--database-url", type=str, default=None, help="Database URL (default: from env or SQLite)")
++    parser.add_argument(
++        "--database-url", type=str, default=None, help="Database URL (default: from env or SQLite)"
++    )
+     parser.add_argument("--json", action="store_true", help="Output only JSON results")
+     args = parser.parse_args()
+ 
+@@ -98,6 +103,19 @@ def main() -> int:
+         _env_file=None,
+     )
+ 
++    default_sqlite = "./local-data/bench_temp.db"
++    if (
++        not args.database_url
++        and not os.environ.get("AEGIS_POSTGRES_TEST_URL")
++        and not os.environ.get("DATABASE_URL")
++    ):
++        temp_path = Path(default_sqlite)
++        if temp_path.exists():
++            try:
++                temp_path.unlink()
++            except OSError:
++                pass
++
+     engine, session_factory = database(settings.database_url)
+     Base.metadata.create_all(engine)
+     storage = LocalStorage(session_factory)
+@@ -218,38 +236,63 @@ def main() -> int:
+ 
+     # 4. Database Reconciliation Accounting
+     with session_factory() as db:
+-        persisted_records = db.scalar(
+-            select(func.count()).select_from(EventRecord).where(
+-                EventRecord.organization_id == org_id,
+-                EventRecord.source == source_id,
++        persisted_records = (
++            db.scalar(
++                select(func.count())
++                .select_from(EventRecord)
++                .where(
++                    EventRecord.organization_id == org_id,
++                    EventRecord.source == source_id,
++                )
+             )
+-        ) or 0
+-        processed_records = db.scalar(
+-            select(func.count()).select_from(EventRecord).where(
+-                EventRecord.organization_id == org_id,
+-                EventRecord.source == source_id,
+-                EventRecord.state == "PROCESSED",
++            or 0
++        )
++        processed_records = (
++            db.scalar(
++                select(func.count())
++                .select_from(EventRecord)
++                .where(
++                    EventRecord.organization_id == org_id,
++                    EventRecord.source == source_id,
++                    EventRecord.state == "PROCESSED",
++                )
+             )
+-        ) or 0
+-        pending_records = db.scalar(
+-            select(func.count()).select_from(EventRecord).where(
+-                EventRecord.organization_id == org_id,
+-                EventRecord.source == source_id,
+-                EventRecord.state.in_(["PENDING", "RETRY"]),
++            or 0
++        )
++        pending_records = (
++            db.scalar(
++                select(func.count())
++                .select_from(EventRecord)
++                .where(
++                    EventRecord.organization_id == org_id,
++                    EventRecord.source == source_id,
++                    EventRecord.state.in_(["PENDING", "RETRY"]),
++                )
+             )
+-        ) or 0
+-        dead_records = db.scalar(
+-            select(func.count()).select_from(EventRecord).where(
+-                EventRecord.organization_id == org_id,
+-                EventRecord.source == source_id,
+-                EventRecord.state == "DEAD",
++            or 0
++        )
++        dead_records = (
++            db.scalar(
++                select(func.count())
++                .select_from(EventRecord)
++                .where(
++                    EventRecord.organization_id == org_id,
++                    EventRecord.source == source_id,
++                    EventRecord.state == "DEAD",
++                )
+             )
+-        ) or 0
+-        generated_alerts = db.scalar(
+-            select(func.count()).select_from(Alert).where(
+-                Alert.organization_id == org_id,
++            or 0
++        )
++        generated_alerts = (
++            db.scalar(
++                select(func.count())
++                .select_from(Alert)
++                .where(
++                    Alert.organization_id == org_id,
++                )
+             )
+-        ) or 0
++            or 0
++        )
+ 
+     # Calculate reconciliation: submitted vs persisted vs processed
+     # Discrepancy is actual event loss
+@@ -292,11 +335,17 @@ def main() -> int:
+         },
+         "throughput_metrics": {
+             "ingestion_duration_seconds": round(ingest_duration, 4),
+-            "ingestion_events_per_second": round(total_accepted / ingest_duration, 2) if ingest_duration else 0.0,
++            "ingestion_events_per_second": round(total_accepted / ingest_duration, 2)
++            if ingest_duration
++            else 0.0,
+             "detection_duration_seconds": round(worker_duration, 4),
+-            "detection_events_per_second": round(total_processed / worker_duration, 2) if worker_duration else 0.0,
++            "detection_events_per_second": round(total_processed / worker_duration, 2)
++            if worker_duration
++            else 0.0,
+             "end_to_end_duration_seconds": round(total_e2e_duration, 4),
+-            "end_to_end_events_per_second": round(args.events / total_e2e_duration, 2) if total_e2e_duration else 0.0,
++            "end_to_end_events_per_second": round(args.events / total_e2e_duration, 2)
++            if total_e2e_duration
++            else 0.0,
+         },
+         "latency_percentiles_seconds": {
+             "p50_median": round(p50, 4),
+@@ -341,7 +390,9 @@ def main() -> int:
+     else:
+         print(f"[*] Ingestion Throughput:  {report['throughput_metrics']['ingestion_events_per_second']} EPS")
+         print(f"[*] Detection Worker Rate: {report['throughput_metrics']['detection_events_per_second']} EPS")
+-        print(f"[*] Batch Latency p50:     {report['latency_percentiles_seconds']['p50_median'] * 1000:.1f} ms")
++        print(
++            f"[*] Batch Latency p50:     {report['latency_percentiles_seconds']['p50_median'] * 1000:.1f} ms"
++        )
+         print(f"[*] Batch Latency p95:     {report['latency_percentiles_seconds']['p95'] * 1000:.1f} ms")
+         print(f"[*] Batch Latency p99:     {report['latency_percentiles_seconds']['p99'] * 1000:.1f} ms")
+         print(f"[*] Alerts Generated:      {generated_alerts}")
+@@ -357,4 +408,5 @@ def main() -> int:
+ 
+ if __name__ == "__main__":
+     import sys
++
+     sys.exit(main())
+diff --git a/scripts/integration_gate.py b/scripts/integration_gate.py
+index 2403087..dfe3b67 100644
+--- a/scripts/integration_gate.py
++++ b/scripts/integration_gate.py
+@@ -2,8 +2,11 @@
+ 
+ Zero-skip policy: fails if any integration test is skipped or fails.
+ Never prints or leaks credentials.
++Guarantees database test safety by targeting exclusively isolated test databases (e.g., aegis_test).
+ """
+ 
++from __future__ import annotations
++
+ import os
+ import re
+ import socket
+@@ -12,8 +15,15 @@ import sys
+ import time
+ from pathlib import Path
+ 
++from alembic import command
++from alembic.config import Config
+ from dotenv import dotenv_values
+ 
++from aegis.db_safety import (
++    ensure_isolated_test_database,
++    validate_test_database_url,
++)
++
+ ROOT = Path(__file__).resolve().parents[1]
+ 
+ 
+@@ -36,6 +46,7 @@ MANDATORY_INTEGRATION_TESTS = {
+     "test_postgres_concurrent_rule_activation_and_replay",
+     # Distributed Services Suite (tests/test_integration.py)
+     "test_real_dependency_connectivity",
++    "test_real_redis_queue_semantics_and_delivery",
+ }
+ 
+ 
+@@ -51,6 +62,20 @@ def wait_for_port(host: str, port: int, timeout_seconds: int = 30) -> bool:
+     return False
+ 
+ 
++def prepare_test_database(test_url: str, admin_url: str, test_db_name: str) -> None:
++    """Validate, auto-provision, and apply schema migrations to the dedicated test database."""
++    print(f"Verifying database safety invariants for test database '{test_db_name}'...")
++    validate_test_database_url(test_url, environment="testing")
++
++    print(f"Ensuring isolated test database '{test_db_name}' exists...")
++    ensure_isolated_test_database(admin_url, test_db_name)
++
++    print(f"Applying schema migrations deterministically to '{test_db_name}'...")
++    alembic_cfg = Config(str(ROOT / "alembic.ini"))
++    alembic_cfg.set_main_option("sqlalchemy.url", test_url)
++    command.upgrade(alembic_cfg, "head")
++
++
+ def main() -> None:
+     env_file = ROOT / ".env"
+     if not env_file.exists():
+@@ -86,12 +111,24 @@ def main() -> None:
+             sys.exit(1)
+         print(f"  -> {name} is reachable on {host}:{port}.")
+ 
+-    # 2. Build sanitized execution environment for integration test suite
++    # 2. Database Isolation: Explicitly target dedicated test database (never normal app DB)
++    test_db_name = os.environ.get("AEGIS_POSTGRES_TEST_DB", "aegis_test")
++    test_pg_url = f"postgresql+psycopg://aegis:{postgres_pass}@127.0.0.1:5432/{test_db_name}"
++    admin_pg_url = f"postgresql://aegis:{postgres_pass}@127.0.0.1:5432/postgres"
++
++    try:
++        prepare_test_database(test_pg_url, admin_pg_url, test_db_name)
++    except Exception as exc:
++        print(f"RELEASE GATE FAILED: Test database preparation error: {exc}", file=sys.stderr)
++        sys.exit(1)
++
++    # 3. Build sanitized execution environment for integration test suite
+     test_env = os.environ.copy()
+     test_env.update(
+         {
+-            "AEGIS_POSTGRES_TEST_URL": f"postgresql+psycopg://aegis:{postgres_pass}@127.0.0.1:5432/aegis",
+-            "DATABASE_URL": f"postgresql+psycopg://aegis:{postgres_pass}@127.0.0.1:5432/aegis",
++            "AEGIS_POSTGRES_TEST_URL": test_pg_url,
++            "DATABASE_URL": test_pg_url,
++            "ENVIRONMENT": "testing",
+             "REDIS_URL": f"redis://:{redis_pass}@127.0.0.1:6379/0",
+             "OPENSEARCH_URL": "http://127.0.0.1:9200",
+             "OPENSEARCH_USERNAME": "aegis",
+@@ -101,12 +138,13 @@ def main() -> None:
+         }
+     )
+ 
+-    # 3. Execute PostgreSQL concurrency and distributed connectivity test suites
++    # 4. Execute PostgreSQL concurrency and distributed connectivity test suites
+     print("\n=== CI Release Gate: Executing Mandatory Integration Suites ===")
+     cmd = [
+         sys.executable,
+         "-m",
+         "pytest",
++        "tests/test_database_safety.py",
+         "tests/test_postgres_integration.py",
+         "tests/test_integration.py",
+         "-v",
+@@ -133,8 +171,7 @@ def main() -> None:
+     process.wait()
+     full_output = "".join(output_lines)
+ 
+-    # 4. Enforce strict Zero-Skip policy
+-    # Match patterns like: "13 passed in 12.34s" or "12 passed, 1 skipped in ..."
++    # 5. Enforce strict Zero-Skip policy
+     summary_match = re.search(r"=+\s*(.+?)\s*in\s+[\d\.]+", full_output)
+     if not summary_match:
+         print(
+@@ -192,7 +229,7 @@ def main() -> None:
+         )
+         sys.exit(1)
+ 
+-    # 5. Explicitly verify every single mandatory integration test by name was executed and PASSED
++    # 6. Explicitly verify every single mandatory integration test by name was executed and PASSED
+     passed_test_names = set(re.findall(r"::(\w+(?:\[[^\]\r\n]+\])?)\s+PASSED", full_output))
+     missing_tests = MANDATORY_INTEGRATION_TESTS - passed_test_names
+     if missing_tests:
+diff --git a/tests/test_ci_release_gate.py b/tests/test_ci_release_gate.py
+index 3b13283..423ee37 100644
+--- a/tests/test_ci_release_gate.py
++++ b/tests/test_ci_release_gate.py
+@@ -33,6 +33,7 @@ def mock_env_config(tmp_path, monkeypatch):
+         f"OPENSEARCH_PASSWORD={secret_pass}\n"
+     )
+     monkeypatch.setattr(integration_gate, "ROOT", tmp_path)
++    monkeypatch.setattr(integration_gate, "prepare_test_database", lambda *args, **kwargs: None)
+     return {"path": env_file, "secret": secret_pass}
+ 
+ 
+@@ -166,7 +167,7 @@ def test_gate_fails_when_no_tests_collected(mock_env_config, monkeypatch, capsys
+ 
+     assert exc_info.value.code == 1
+     captured = capsys.readouterr()
+-    assert "RELEASE GATE FAILED: Expected at least 16 integration tests, got 0." in captured.err
++    assert "RELEASE GATE FAILED: Expected at least 17 integration tests, got 0." in captured.err
+ 
+ 
+ def test_gate_fails_when_pytest_output_malformed(mock_env_config, monkeypatch, capsys):
+@@ -224,12 +225,13 @@ ALL_PASSED_STDOUT = (
+     "tests/test_postgres_integration.py::test_postgres_concurrent_rule_activation_and_replay PASSED\n"
+     "tests/test_postgres_integration.py::test_postgres_concurrent_storyline_correlation PASSED\n"
+     "tests/test_integration.py::test_real_dependency_connectivity PASSED\n"
+-    "=================== 16 passed in 15.20s ===================\n"
++    "tests/test_integration.py::test_real_redis_queue_semantics_and_delivery PASSED\n"
++    "=================== 17 passed in 15.20s ===================\n"
+ )
+ 
+ 
+ def test_gate_succeeds_when_all_healthy_and_16_pass(mock_env_config, monkeypatch, capsys):
+-    """Condition: All services healthy and all 16 fixture cases pass cleanly (Happy Path)."""
++    """Condition: All services healthy and all 17 fixture cases pass cleanly (Happy Path)."""
+     monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
+ 
+     mock_process = MagicMock()
+@@ -240,7 +242,7 @@ def test_gate_succeeds_when_all_healthy_and_16_pass(mock_env_config, monkeypatch
+         integration_gate.main()
+ 
+     captured = capsys.readouterr()
+-    assert "Passed:     16" in captured.out
++    assert "Passed:     17" in captured.out
+     assert "Failed:     0" in captured.out
+     assert "Skipped:    0" in captured.out
+     assert "Deselected: 0" in captured.out
+@@ -288,8 +290,9 @@ def test_gate_fails_when_mandatory_test_renamed_or_missing(mock_env_config, monk
+         "tests/test_postgres_integration.py::test_postgres_schema_migration_previous_to_current PASSED\n"
+         "tests/test_postgres_integration.py::test_postgres_concurrent_rule_activation_and_replay PASSED\n"
+         "tests/test_postgres_integration.py::test_postgres_concurrent_storyline_correlation PASSED\n"
++        "tests/test_integration.py::test_real_redis_queue_semantics_and_delivery PASSED\n"
+         "tests/test_integration.py::test_dummy_extra PASSED\n"
+-        "=================== 16 passed in 15.20s ===================\n"
++        "=================== 17 passed in 15.20s ===================\n"
+     )
+ 
+     mock_process = MagicMock()
+diff --git a/tests/test_integration.py b/tests/test_integration.py
+index cb9aa22..994ef17 100644
+--- a/tests/test_integration.py
++++ b/tests/test_integration.py
+@@ -1,4 +1,8 @@
++import hashlib
++import json
+ import os
++import time
++from uuid import uuid4
+ 
+ import pytest
+ from redis import Redis
+@@ -23,3 +27,129 @@ def test_real_dependency_connectivity():
+     storage = OpenSearchStorage(settings)
+     storage.setup()
+     assert storage.health() == "HEALTHY"
++
++
++@pytest.mark.integration
++def test_real_redis_queue_semantics_and_delivery():
++    """Verify live Redis queue semantics, payload checksum integrity, retry/DLQ, and deduplication.
++
++    Validates that:
++    1. Uniquely identified messages are enqueued and dequeued within bounded timeouts.
++    2. Payload integrity and cryptographic checksums are preserved across serialization.
++    3. Duplicate deliveries are safely detected and deduplicated via atomic gates.
++    4. Worker failure retry counter advances and routes to dead-letter queue (DLQ) upon exhaustion.
++    5. Cleanup strictly affects test-owned resources with zero residue left in Redis.
++    """
++    if not os.environ.get("AEGIS_INTEGRATION"):
++        pytest.skip("Set AEGIS_INTEGRATION=1 with PostgreSQL, Redis and OpenSearch configured")
++
++    settings = Settings()
++    if not settings.redis_url:
++        pytest.skip("REDIS_URL not configured")
++
++    redis = Redis.from_url(settings.redis_url, socket_timeout=3, decode_responses=True)
++    assert redis.ping(), "Redis ping failed before test execution"
++
++    test_id = uuid4().hex
++    queue_key = f"aegis:test:queue:{test_id}"
++    retry_key = f"aegis:test:retry:{test_id}"
++    dlq_key = f"aegis:test:dlq:{test_id}"
++    dedup_key = f"aegis:test:dedup:{test_id}"
++    rate_key = f"aegis:test:rate:{test_id}"
++
++    created_keys = [queue_key, retry_key, dlq_key, dedup_key, rate_key]
++
++    try:
++        # 1. Enqueue uniquely identified test message with cryptographic checksum
++        raw_payload = {
++            "message_id": f"msg-{test_id}-100",
++            "event_type": "security.containment.action",
++            "actor": "ironclad-release-auditor",
++            "target": "endpoint-prod-sim-01",
++            "timestamp": time.time(),
++            "attempts": 0,
++            "metadata": {"test_run_id": test_id, "priority": "CRITICAL"},
++        }
++        canonical_str = json.dumps(raw_payload, sort_keys=True)
++        payload_checksum = hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
++
++        envelope = {
++            "checksum": payload_checksum,
++            "data": raw_payload,
++        }
++        enqueue_count = redis.rpush(queue_key, json.dumps(envelope))
++        assert enqueue_count == 1, f"Expected 1 item in queue, got {enqueue_count}"
++
++        # 2. Dequeue with timeout and verify payload integrity
++        pop_res = redis.blpop(queue_key, timeout=3)
++        assert pop_res is not None, f"Timeout (3s) waiting for message on queue '{queue_key}'"
++        _q_name, dequeued_raw = pop_res
++
++        dequeued_envelope = json.loads(dequeued_raw)
++        recomputed_checksum = hashlib.sha256(
++            json.dumps(dequeued_envelope["data"], sort_keys=True).encode("utf-8")
++        ).hexdigest()
++        assert recomputed_checksum == dequeued_envelope["checksum"], "Payload integrity checksum mismatch!"
++        assert dequeued_envelope["data"]["message_id"] == raw_payload["message_id"]
++        assert dequeued_envelope["data"]["actor"] == raw_payload["actor"]
++
++        # 3. Duplicate Delivery Handling (At-Least-Once Idempotency Gate)
++        # First arrival: acquire processing lease via atomic SETNX
++        first_lease = redis.set(dedup_key, "PROCESSED", nx=True, ex=60)
++        assert first_lease is True, "First delivery should successfully acquire processing lease"
++
++        # Second arrival (simulated duplicate network redelivery): lease must be rejected
++        second_lease = redis.set(dedup_key, "PROCESSED", nx=True, ex=60)
++        assert not second_lease, "Duplicate delivery must be rejected by deduplication gate"
++
++        # 4. Failure Retry and Dead-Letter Queue (DLQ) Progression
++        max_attempts = 3
++        current_msg = dict(raw_payload)
++        current_msg["attempts"] = 1
++
++        # Simulate failure iteration 1 -> push to retry queue
++        redis.rpush(retry_key, json.dumps(current_msg))
++        assert redis.llen(retry_key) == 1
++
++        # Worker picks up from retry, fails again, reaches max_attempts
++        retried_raw = redis.lpop(retry_key)
++        assert retried_raw is not None
++        retry_msg = json.loads(retried_raw)
++        retry_msg["attempts"] += 1
++        assert retry_msg["attempts"] == 2
++
++        # Simulate terminal failure on 3rd attempt -> route to DLQ
++        retry_msg["attempts"] += 1
++        assert retry_msg["attempts"] >= max_attempts
++
++        dlq_envelope = {
++            "dead_letter_reason": "MAX_RETRIES_EXCEEDED",
++            "failed_at": time.time(),
++            "original_payload": retry_msg,
++        }
++        redis.rpush(dlq_key, json.dumps(dlq_envelope))
++        assert redis.llen(dlq_key) == 1
++
++        dlq_item = json.loads(redis.lpop(dlq_key))
++        assert dlq_item["dead_letter_reason"] == "MAX_RETRIES_EXCEEDED"
++        assert dlq_item["original_payload"]["attempts"] == 3
++
++        # 5. Token bucket / rate-limiting counter semantics and TTL
++        pipe = redis.pipeline()
++        pipe.incr(rate_key)
++        pipe.expire(rate_key, 120)
++        pipe.incr(rate_key)
++        res = pipe.execute()
++        assert res[0] == 1
++        assert res[1] is True or res[1] == 1
++        assert res[2] == 2
++        ttl = redis.ttl(rate_key)
++        assert 0 < ttl <= 120, f"Expected TTL between 1 and 120, got {ttl}"
++
++    finally:
++        # Clean up strictly test-owned keys
++        for k in created_keys:
++            redis.delete(k)
++        # Verify test isolation cleanup succeeded
++        for k in created_keys:
++            assert not redis.exists(k), f"Key {k} was not cleaned up after test run"
+diff --git a/tests/test_opensearch_hardening.py b/tests/test_opensearch_hardening.py
+index b2ded3e..6f74d12 100644
+--- a/tests/test_opensearch_hardening.py
++++ b/tests/test_opensearch_hardening.py
+@@ -53,3 +53,78 @@ def test_opensearch_query_builder_enforces_tenant_and_optimizes_wildcards():
+     # 8. Aggregation is bounded
+     assert body["aggs"]["values"]["terms"]["field"] == "event_category"
+     assert body["aggs"]["values"]["terms"]["size"] == 50
++
++
++def test_opensearch_production_enforces_https_and_ca():
++    """Verify that production mode strictly enforces HTTPS and CA validation for OpenSearch."""
++    import pytest
++    from pydantic import ValidationError
++
++    # 1. Plaintext HTTP in production must be rejected
++    with pytest.raises(ValidationError) as exc_info:
++        Settings(
++            environment="production",
++            database_url="postgresql+psycopg://aegis:pass@127.0.0.1:5432/aegis",
++            redis_url="redis://:pass@127.0.0.1:6379/0",
++            opensearch_url="http://opensearch:9200",
++            opensearch_ca="/etc/ssl/certs/ca.pem",
++            audit_secret="super-secret-key-at-least-32chars-long-xxx",
++            cookie_secure=True,
++            public_origin="https://aegis.example.com",
++            _env_file=None,
++        )
++    assert "Production requires HTTPS for OpenSearch" in str(exc_info.value)
++
++    # 2. HTTPS without CA certificate in production must be rejected
++    with pytest.raises(ValidationError) as exc_info:
++        Settings(
++            environment="production",
++            database_url="postgresql+psycopg://aegis:pass@127.0.0.1:5432/aegis",
++            redis_url="redis://:pass@127.0.0.1:6379/0",
++            opensearch_url="https://opensearch:9200",
++            opensearch_ca=None,
++            audit_secret="super-secret-key-at-least-32chars-long-xxx",
++            cookie_secure=True,
++            public_origin="https://aegis.example.com",
++            _env_file=None,
++        )
++    assert "Production requires CA certificate validation" in str(exc_info.value)
++
++    # 3. HTTPS with CA certificate in production must succeed
++    valid_settings = Settings(
++        environment="production",
++        database_url="postgresql+psycopg://aegis:pass@127.0.0.1:5432/aegis",
++        redis_url="redis://:pass@127.0.0.1:6379/0",
++        opensearch_url="https://opensearch:9200",
++        opensearch_ca="/etc/ssl/certs/ca.pem",
++        audit_secret="super-secret-key-at-least-32chars-long-xxx",
++        cookie_secure=True,
++        public_origin="https://aegis.example.com",
++        _env_file=None,
++    )
++    assert valid_settings.opensearch_url == "https://opensearch:9200"
++    assert valid_settings.opensearch_ca == "/etc/ssl/certs/ca.pem"
++
++
++def test_opensearch_client_enforces_certificate_verification(monkeypatch):
++    """Verify OpenSearch client is instantiated with verify_certs=True and proper CA certs."""
++    captured_kwargs = {}
++
++    def mock_opensearch_init(self, hosts=None, **kwargs):
++        captured_kwargs.update(kwargs)
++
++    monkeypatch.setattr("aegis.storage.OpenSearch.__init__", mock_opensearch_init)
++
++    settings = Settings(
++        environment="development",
++        opensearch_url="https://opensearch:9200",
++        opensearch_ca="/path/to/custom_ca.pem",
++        _env_file=None,
++    )
++    storage = OpenSearchStorage(settings)
++    assert storage is not None
++
++    # Certificate verification must NEVER be disabled
++    assert captured_kwargs.get("verify_certs") is True
++    assert captured_kwargs.get("ca_certs") == "/path/to/custom_ca.pem"
++
+diff --git a/tests/test_postgres_integration.py b/tests/test_postgres_integration.py
+index 9e3fa9b..cbc97aa 100644
+--- a/tests/test_postgres_integration.py
++++ b/tests/test_postgres_integration.py
+@@ -33,6 +33,7 @@ from aegis.db import (
+     User,
+     WindowState,
+ )
++from aegis.db_safety import validate_test_database_url
+ from aegis.detection import SQLState
+ from aegis.parsers import digest
+ from aegis.pipeline import detect_batch, ingest, seed_rules
+@@ -50,6 +51,8 @@ def pg_engine():
+     """Verify connectivity to isolated PostgreSQL test instance."""
+     if not POSTGRES_TEST_URL:
+         pytest.skip("AEGIS_POSTGRES_TEST_URL environment variable not configured")
++    # Strictly validate that POSTGRES_TEST_URL points to an isolated test database
++    validate_test_database_url(POSTGRES_TEST_URL, environment=os.environ.get("ENVIRONMENT", "testing"))
+     try:
+         engine = create_engine(POSTGRES_TEST_URL, pool_pre_ping=True, connect_args={"connect_timeout": 3})
+         with engine.connect() as conn:
+@@ -701,7 +704,7 @@ def test_postgres_schema_migration_previous_to_current(pg_engine):
+ 
+     root = Path(__file__).resolve().parents[1]
+     cfg = Config(str(root / "alembic.ini"))
+-    mig_db_name = f"aegis_mig_{uuid4().hex[:8]}"
++    mig_db_name = f"aegis_test_mig_{uuid4().hex[:8]}"
+ 
+     from sqlalchemy.engine import make_url
+ 

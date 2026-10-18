@@ -19,7 +19,7 @@ export function DataTable({ rows, columns, onOpen }: { rows: Row[]; columns?: st
   const fields = columns || ["severity", "title", "status", "risk_score", "created_at"];
   return <div className="table-wrap"><table><thead><tr>{fields.map(field => <th key={field} scope="col">{field.replaceAll("_", " ")}</th>)}{onOpen && <th scope="col">Details</th>}</tr></thead>
     <tbody>{rows.map((row, i) => <tr key={row.id || String(row.event_id) || i}>{fields.map(field => <td key={field}>
-      {["severity", "status"].includes(field) ? <Badge value={row[field]} /> : <span title={display(row[field])} className={field.includes("id") ? "mono" : ""}>{display(row[field])}</span>}
+      {["severity", "status"].includes(field) ? <Badge value={field === "status" ? row.containment_status ?? row[field] : row[field]} /> : <span title={display(row[field])} className={field.includes("id") ? "mono" : ""}>{display(row[field])}</span>}
     </td>)}{onOpen && <td><button className="text-button" aria-label={`Open ${row.title || row.id || row.event_id || "event"}`} onClick={() => onOpen(row)}>Investigate ↗</button></td>}</tr>)}</tbody></table></div>;
 }
 

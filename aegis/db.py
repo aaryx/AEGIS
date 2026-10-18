@@ -615,9 +615,19 @@ def database(url: str):
 
 
 def as_dict(row) -> dict:
-    return {
+    result = {
         column.name: (
             value.isoformat() if isinstance(value := getattr(row, column.name), datetime) else value
         )
         for column in row.__table__.columns
     }
+    if isinstance(row, PlaybookExecution):
+        from aegis.containment import NETWORK_ACTIONS, execution_containment_status
+
+        if row.action in NETWORK_ACTIONS:
+            result["containment_status"] = execution_containment_status(row.status, row.result or {})
+            result["containment_evidence_scope"] = (
+                (row.result or {}).get("scope", "unknown") if (row.result or {}).get("semantics_version") == 2
+                else "legacy-or-unacknowledged; not proof of enforcement"
+            )
+    return result

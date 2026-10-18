@@ -1,0 +1,29 @@
+ M aegis/agent.py
+ M aegis/api.py
+ M aegis/config.py
+ M aegis/parsers.py
+ M aegis/retention.py
+ M aegis/syslog.py
+ M docs/adversarial-validation-report.md
+ M scripts/benchmark_concurrency_and_stress.py
+ M scripts/integration_gate.py
+ M tests/test_ci_release_gate.py
+ M tests/test_integration.py
+ M tests/test_opensearch_hardening.py
+ M tests/test_postgres_integration.py
+?? aegis/db_safety.py
+?? compose.production.yaml
+?? docs/operations/opensearch_tls_guide.md
+?? docs/validation/ironclad-phase3/
+?? docs/validation/ironclad-phase4/
+?? docs/validation/ironclad-phase5/
+?? docs/validation/ironclad-phase6/
+?? docs/validation/ironclad-phase7/
+?? docs/validation/ironclad/
+?? docs/validation/project-titan/
+?? tests/test_agent_nonce_replay_invariant.py
+?? tests/test_database_safety.py
+?? tests/test_disaster_recovery_and_backup_qualification.py
+?? tests/test_ironclad_qualification.py
+?? tests/test_soc_end_to_end_acceptance.py
+?? tests/test_titan_regressions.py

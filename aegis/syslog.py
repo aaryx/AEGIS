@@ -261,6 +261,15 @@ class SyslogServer:
                     space_idx = buffer.find(b" ")
                     if space_idx > 0 and buffer[:space_idx].isdigit():
                         msg_len = int(buffer[:space_idx].decode("ascii"))
+                        if msg_len <= 0 or msg_len > self.max_bytes:
+                            logger.warning(
+                                "Syslog TCP client %s sent invalid octet length %d (max_bytes=%d); discarding frame",
+                                client_ip,
+                                msg_len,
+                                self.max_bytes,
+                            )
+                            del buffer[: space_idx + 1]
+                            continue
                         total_frame = space_idx + 1 + msg_len
                         if len(buffer) >= total_frame:
                             msg_bytes = buffer[space_idx + 1 : total_frame]

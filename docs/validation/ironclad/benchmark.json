@@ -1,0 +1,133 @@
+{
+  "python": "3.14.3",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "method": "SQLite WAL; 34 seeded rules; one worker; tracemalloc enabled; 1 warm-up; 3 repetitions",
+  "results": [
+    {
+      "events": 100,
+      "batch_size": 50,
+      "processed": 100,
+      "ingestion_seconds": 0.6204608999998982,
+      "ingestion_eps": 161.17051050278334,
+      "batch_p50_seconds": 0.3102250000000595,
+      "batch_p95_seconds": 0.3376126000000568,
+      "worker_seconds": 2.2284680999998727,
+      "worker_eps": 44.87387546629261,
+      "ueba_seconds": 0.09210310000003119,
+      "ueba_result": {
+        "events": 100,
+        "unique_observations": 100,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 1497,
+      "cpu_seconds": 2.71875,
+      "python_peak_bytes": 2165119
+    },
+    {
+      "events": 100,
+      "batch_size": 50,
+      "processed": 100,
+      "ingestion_seconds": 0.5736423000000741,
+      "ingestion_eps": 174.32466190165383,
+      "batch_p50_seconds": 0.2868154999999888,
+      "batch_p95_seconds": 0.3011728999999832,
+      "worker_seconds": 2.0569243999998434,
+      "worker_eps": 48.616273889311444,
+      "ueba_seconds": 0.09399180000013985,
+      "ueba_result": {
+        "events": 100,
+        "unique_observations": 100,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 1497,
+      "cpu_seconds": 2.546875,
+      "python_peak_bytes": 2303406
+    },
+    {
+      "events": 100,
+      "batch_size": 50,
+      "processed": 100,
+      "ingestion_seconds": 0.5641316999999617,
+      "ingestion_eps": 177.26357160926568,
+      "batch_p50_seconds": 0.2820625500000915,
+      "batch_p95_seconds": 0.30713680000008026,
+      "worker_seconds": 2.291072600000007,
+      "worker_eps": 43.64767838435137,
+      "ueba_seconds": 0.08950229999982184,
+      "ueba_result": {
+        "events": 100,
+        "unique_observations": 100,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 1497,
+      "cpu_seconds": 2.609375,
+      "python_peak_bytes": 2305064
+    },
+    {
+      "events": 500,
+      "batch_size": 50,
+      "processed": 500,
+      "ingestion_seconds": 3.5658368999997947,
+      "ingestion_eps": 140.21953724244335,
+      "batch_p50_seconds": 0.3623560000000907,
+      "batch_p95_seconds": 0.4198226999999406,
+      "worker_seconds": 10.12366279999992,
+      "worker_eps": 49.389238843475106,
+      "ueba_seconds": 0.18755319999991116,
+      "ueba_result": {
+        "events": 500,
+        "unique_observations": 500,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 6321,
+      "cpu_seconds": 12.921875,
+      "python_peak_bytes": 5668504
+    },
+    {
+      "events": 500,
+      "batch_size": 50,
+      "processed": 500,
+      "ingestion_seconds": 3.200917600000139,
+      "ingestion_eps": 156.20520815655433,
+      "batch_p50_seconds": 0.3350889499999994,
+      "batch_p95_seconds": 0.3565163000000666,
+      "worker_seconds": 8.276403999999957,
+      "worker_eps": 60.412710640998505,
+      "ueba_seconds": 0.18460370000002513,
+      "ueba_result": {
+        "events": 500,
+        "unique_observations": 500,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 6321,
+      "cpu_seconds": 10.78125,
+      "python_peak_bytes": 5429187
+    },
+    {
+      "events": 500,
+      "batch_size": 50,
+      "processed": 500,
+      "ingestion_seconds": 3.0435313000000406,
+      "ingestion_eps": 164.28285130499341,
+      "batch_p50_seconds": 0.2984551999999212,
+      "batch_p95_seconds": 0.37532450000003337,
+      "worker_seconds": 7.868771799999877,
+      "worker_eps": 63.54231800190315,
+      "ueba_seconds": 0.16135429999985718,
+      "ueba_result": {
+        "events": 500,
+        "unique_observations": 500,
+        "profiles": 25,
+        "new_findings": 0
+      },
+      "sql_statements": 6321,
+      "cpu_seconds": 10.359375,
+      "python_peak_bytes": 4445565
+    }
+  ]
+}

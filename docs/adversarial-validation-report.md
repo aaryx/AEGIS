@@ -70,6 +70,23 @@ revalidated in the workflow engine. No action adapter or permission was expanded
 | TITAN-05 | High intelligence tenant isolation: `related()` in `aegis/intelligence.py` joined `AlertEvent` and `IncidentAlert` across tenants without filtering `Alert.organization_id == org` and `Incident.organization_id == org`. | Join `Alert` and `Incident` with explicit `organization_id == org` filters. Verified with `test_related_observables_tenant_isolation`. |
 | TITAN-06 | High audit integrity closed-failure: deleting the `AuditHead` row allowed `verify_audit()` in `aegis/security.py` to evaluate truncated chains as valid. | Check `if not head: if records or org.audit_head != '0'*64: return False` to enforce fail-closed verification on missing head. Verified with `test_audit_verification_closed_failure_on_missing_or_tampered_head`. |
 | TITAN-07 | Medium UEBA event limit enforcement (Section 9): tested below, at, and above the 10,000 default (configurable up to 50,000) bound with nested transaction rollback. | Verified in `test_ueba_event_limit_below_at_and_above` that exceeding the bound raises `ValueError`, rolls back partial state, and transitions worker job cleanly to `FAILED` without getting stuck in retry loops. |
+| IRONCLAD-01 | High Data Retention & Legal Holds: Case evidence with plural `resource_type == "events"` and non-closed active alerts (`ACKNOWLEDGED`, `INVESTIGATING`, `ESCALATED`) bypassed retention protection in `aegis/retention.py`. | Checked `resource_type in {"event", "events"}` and protected all active non-closed alerts; added tenant scoping to search job/entity relationship pruning. Verified in `tests/test_ironclad_qualification.py::test_ironclad_01_retention_legal_hold_case_evidence_plural_and_active_alerts`. |
+| IRONCLAD-02 | Critical Agent Cryptographic Receipt Authenticity: `/agents/{name}/receipts` accepted unkeyed SHA-256 fallback (`receipt_hash`) recomputed from client payload, bypassing Ed25519 signatures, challenge freshness windows, and controller signature binding. | Removed unkeyed SHA-256 fallback, enforced mandatory Ed25519 signature from enrolled agent, 300s freshness window, controller signature binding, and anti-replay nonces in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_02_agent_receipt_requires_cryptographic_verification`. |
+| IRONCLAD-03 | High Agent Token Authentication & Anti-Impersonation: Missing anti-impersonation checks across agent endpoints allowed one agent token to query or submit data for another agent. | Enforced token authentication and strict path/token identity alignment in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_03_enrolled_agent_token_can_access_agent_endpoints_and_rejects_impersonation`. |
+| IRONCLAD-04 | Medium Agent Ed25519 Key Rotation: Inconsistent JSON key ordering and missing signature verification allowed unvalidated key rotation payloads. | Standardized canonical payload serialization and enforced Ed25519 signature verification on key rotation in `aegis/agent.py` and `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_04_agent_key_rotation_validates_signature`. |
+| IRONCLAD-05 | High Syslog TCP Bounded Buffer Protection: RFC 5425 octet-counting parser accumulated unbounded byte streams when presented with invalid frame headers, risking DoS memory exhaustion. | Enforced bounded buffer defense in `aegis/syslog.py` discarding frames exceeding `max_bytes` (64KB). Verified in `tests/test_ironclad_qualification.py::test_ironclad_05_syslog_tcp_oversized_octet_frame_defense`. |
+| IRONCLAD-06 | Medium Ingestion Parser Error Propagation: Unparsed schema validation errors bubbled up as HTTP 500/503 errors instead of explicit client errors (400/422). | Caught schema parsing validation errors in `aegis/parsers.py` and mapped them to `ValueError` (HTTP 400). Verified in `tests/test_ironclad_qualification.py::test_ironclad_06_ingestion_parser_malformed_event_returns_400_not_503`. |
+| IRONCLAD-07 | High Agent Process Termination Safety Guardrails: `terminate_process` permitted arbitrary PID termination, risking termination of PID 0, PID 1, or critical Windows subsystem binaries (`csrss.exe`, `lsass.exe`, `services.exe`). | Added boundary checks in `aegis/agent.py` blocking `pid <= 1` and system binaries. Verified in `tests/test_ironclad_qualification.py::test_ironclad_07_agent_terminate_process_blocks_invalid_pid_and_system_binaries`. |
+| IRONCLAD-08 | Low Case Status Workflow Transitions: Case status updates allowed arbitrary strings without state machine validation. | Enforced recognized lifecycle transitions (`OPEN`, `IN_PROGRESS`, `RESOLVED`, `CLOSED`) with HTTP 422 on invalid status in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_08_case_status_workflow_transitions`. |
+| IRONCLAD-09 | High Case & Evidence Multi-Tenant Isolation: Cross-tenant evidence attachment and case access verified and isolated. | Verified explicit tenant scoping on case/evidence attachment in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_09_tenant_isolation_cases_and_evidence_cross_attach`. |
+| IRONCLAD-10 | High SOAR Playbook Multi-Tenant Isolation: Playbook templates and execution runs strictly isolated per tenant. | Verified tenant boundaries in `aegis/soar_api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_10_tenant_isolation_soar_playbooks_and_executions`. |
+| IRONCLAD-11 | Medium SOAR Separation of Duties: Users barred from approving their own playbook execution requests even if holding manager privileges. | Verified self-approval prevention in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_11_soar_separation_of_duty_prevents_self_approval`. |
+| IRONCLAD-12 | Medium Rule Replay Multi-Tenant Isolation: Replay jobs restricted from accessing or referencing foreign tenant rules/events. | Verified tenant scoping in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_12_tenant_isolation_rule_replay_jobs`. |
+| IRONCLAD-13 | Medium System Retry Multi-Tenant Isolation: Dead-letter and search job retries restricted to the owning organization. | Verified tenant scoping in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_13_tenant_isolation_dead_letter_and_search_retries`. |
+| IRONCLAD-14 | High Resource Export Multi-Tenant Scoping: Bulk export endpoint filtered strictly by authenticated tenant. | Verified tenant scoping in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_14_tenant_isolation_export_endpoint`. |
+| IRONCLAD-15 | Medium Incident Idempotency Conflict Handling: Reusing idempotency keys with conflicting payload attributes returns HTTP 409 Conflict. | Verified conflict resolution in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_15_incident_idempotency_key_conflict_rejection`. |
+| IRONCLAD-16 | Medium Sigma Import Guardrails: Enforced file size limits (>1MB rejected) and YAML rule schema validation. | Verified in `aegis/api.py`. Verified in `tests/test_ironclad_qualification.py::test_ironclad_16_sigma_rule_import_validation_and_size_limits`. |
+| IRONCLAD-17 | Low SQLite Benchmark Ephemeral Schema Reset: Ephemeral benchmark database schema collision on pre-existing SQLite files. | Unlinked default ephemeral database prior to `create_all()` in `scripts/benchmark_concurrency_and_stress.py`. Verified in concurrency benchmarks. |
 
 Integrating the PostgreSQL regression also exposed a release-gate parser that
 could not recognize parameterized pytest node names. The gate now requires both
@@ -177,13 +194,16 @@ optimization was made from these numbers.
 
 | Final local check | Passed | Failed/errors | Skipped |
 |---|---:|---:|---:|
-| Complete backend (`docs/validation/titan/release-backend.xml`) | 381 | 0 | 26 |
+| Complete backend (TITAN: `docs/validation/titan/release-backend.xml`) | 381 | 0 | 26 |
+| Complete backend (IRONCLAD: `docs/validation/ironclad/release-backend.xml`) | 397 | 0 | 26 |
+| IRONCLAD qualification security suite (`tests/test_ironclad_qualification.py`) | 16 | 0 | 0 |
 | Cerberus + Acceptance + TITAN regression subset | 23 | 0 | 0 |
 | Frontend Vitest | 27 | 0 | 0 |
 | Detection rule cases | 34 | 0 | 0 |
 | Local browser E2E | 1 | 0 | 2 |
 
-Backend coverage is 81%; this is execution coverage, not detection accuracy.
+Backend coverage is 82%; this is execution coverage, not detection accuracy.
+See the comprehensive [Project IRONCLAD Qualification Report](docs/validation/ironclad/ironclad-qualification-report.md) for full risk registers, benchmarks, failure drills, and release gates.
 Lint, mypy (38 source files), frontend typecheck/build, Bandit medium/high scan,
 pip-audit and npm audit passed. Pip-audit excludes the editable project itself.
 One non-test check fails: repository-wide formatting (42 pre-existing files).
@@ -196,8 +216,8 @@ both negative parameter-case tests. No failures were suppressed.
 Use the installed virtual environment (`.venv/Scripts/python` on Windows):
 
 ```text
-python -m pytest tests/test_cerberus.py tests/test_acceptance_recovery.py tests/test_soar.py tests/test_ueba.py tests/test_storylines.py tests/test_intelligence.py tests/test_audit_and_mfa.py -q
-python -m pytest --cov=aegis --cov-report=term --junitxml=docs/validation/titan/release-backend.xml
+python -m pytest tests/test_ironclad_qualification.py -v
+python -m pytest --cov=aegis --cov-report=term --junitxml=docs/validation/ironclad/release-backend.xml
 python -m ruff check aegis tests scripts
 python -m mypy aegis
 python -m bandit -r aegis scripts -ll -q
@@ -209,6 +229,7 @@ npm --prefix web run build
 npm --prefix web audit
 python scripts/e2e.py
 python scripts/benchmark_cerberus.py
+python scripts/benchmark_concurrency_and_stress.py
 ```
 
 In a **fresh disposable checkout with disposable service volumes**, follow the

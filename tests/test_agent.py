@@ -9,22 +9,22 @@ def test_agent_local_methods():
     info = agent.get_system_info()
     assert info["name"] == "TEST-ENDPOINT-01"
     assert info["status"] == "ONLINE"
-    assert info["isolation_status"] == "NONE"
+    assert info["isolation_status"] == "UNKNOWN"
     assert "isolate_host" in info["capabilities"]
     assert "unisolate_host" in info["capabilities"]
 
     # Test isolation
-    iso_result = agent.isolate_host(controller_ip="10.0.0.1")
-    assert iso_result["isolated"] is True
+    iso_result = agent.isolate_host()
+    assert iso_result["isolated"] is False
     assert iso_result["mode"] == "simulated"
-    assert agent.isolated is True
-    assert agent.get_system_info()["isolation_status"] == "ISOLATED"
+    assert agent.isolated is False
+    assert agent.get_system_info()["isolation_status"] == "SIMULATED"
 
     # Test un-isolation
     uniso_result = agent.unisolate_host()
     assert uniso_result["isolated"] is False
     assert agent.isolated is False
-    assert agent.get_system_info()["isolation_status"] == "NONE"
+    assert agent.get_system_info()["isolation_status"] == "SIMULATED"
 
     # Test process termination
     term_result = agent.terminate_process(pid=1337)
@@ -45,7 +45,7 @@ def test_agent_api_registration_and_containment_lifecycle(system):
     hb_resp = agent.heartbeat(client=client)
     assert hb_resp["status"] == "ok"
     assert hb_resp["name"] == agent_name
-    assert hb_resp["isolation_status"] == "NONE"
+    assert hb_resp["isolation_status"] == "UNKNOWN"
 
     # Verify Collector and Entity in DB
     with system["app"].state.sessions() as db:
@@ -54,7 +54,7 @@ def test_agent_api_registration_and_containment_lifecycle(system):
         assert collector.type == "endpoint-agent"
         entity = db.scalar(select(Entity).where(Entity.type == "host", Entity.value == agent_name))
         assert entity is not None
-        assert entity.attributes["isolation_status"] == "NONE"
+        assert entity.attributes["isolation_status"] == "UNKNOWN"
         assert entity.attributes["agent_id"] == collector.id
 
     # 2. List agents via API
@@ -93,16 +93,16 @@ def test_agent_api_registration_and_containment_lifecycle(system):
 
     # 7. Agent executes command and posts cryptographic receipt
     receipt_result = agent.execute_command(pending[0], client=client)
-    assert receipt_result["status"] == "VERIFIED"
-    assert receipt_result["result"]["enforced_externally"] is True
+    assert receipt_result["status"] == "SIMULATED"
+    assert receipt_result["result"]["enforced_externally"] is False
     assert "receipt_hash" in receipt_result["result"]
     assert len(receipt_result["result"]["receipt_hash"]) == 64
-    assert agent.isolated is True
+    assert agent.isolated is False
 
     # Verify Entity isolation status is updated
     with system["app"].state.sessions() as db:
         updated_entity = db.get(Entity, entity.id)
-        assert updated_entity.attributes["isolation_status"] == "ISOLATED"
+        assert updated_entity.attributes["isolation_status"] == "SIMULATED"
 
     # 8. Un-isolation through full run_cycle
     uniso_req = client.post(
@@ -121,12 +121,12 @@ def test_agent_api_registration_and_containment_lifecycle(system):
     cycle_summary = agent.run_cycle(client=client)
     assert cycle_summary["pending_commands"] == 1
     assert len(cycle_summary["executed"]) == 1
-    assert cycle_summary["executed"][0]["status"] == "VERIFIED"
+    assert cycle_summary["executed"][0]["status"] == "SIMULATED"
     assert agent.isolated is False
 
     with system["app"].state.sessions() as db:
         cleared_entity = db.get(Entity, entity.id)
-        assert cleared_entity.attributes["isolation_status"] == "NONE"
+        assert cleared_entity.attributes["isolation_status"] == "SIMULATED"
         cleared_exec = db.get(PlaybookExecution, uniso_id)
-        assert cleared_exec.status == "VERIFIED"
-        assert cleared_exec.result["enforced_externally"] is True
+        assert cleared_exec.status == "SIMULATED"
+        assert cleared_exec.result["enforced_externally"] is False

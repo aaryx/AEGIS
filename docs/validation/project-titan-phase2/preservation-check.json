@@ -1,0 +1,15 @@
+{
+  "changed_since_phase2_baseline": [
+    "aegis\\agent.py",
+    "aegis\\api.py",
+    "aegis\\cli.py",
+    "aegis\\db.py",
+    "aegis\\response.py",
+    "tests\\test_agent.py",
+    "tests\\test_agent_nonce_replay_invariant.py",
+    "tests\\test_ironclad_qualification.py",
+    "tests\\test_soc_end_to_end_acceptance.py",
+    "web\\components\\ui.tsx"
+  ],
+  "missing": []
+}

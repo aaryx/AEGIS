@@ -90,24 +90,24 @@ class RetentionEngine:
 
     def get_legal_holds(self, db: Session, organization_id: str) -> set[str]:
         """Collects event IDs protected from deletion by legal custody or active investigation."""
-        # 1. Events attached to cases as evidence
+        # 1. Events attached to cases as evidence (supporting both singular and plural forms)
         case_held = set(
             db.scalars(
                 select(CaseEvidence.resource_id).where(
                     CaseEvidence.organization_id == organization_id,
-                    CaseEvidence.resource_type == "event",
+                    CaseEvidence.resource_type.in_(["event", "events"]),
                 )
             )
         )
 
-        # 2. Events attached to open alerts (NEW, INVESTIGATING)
+        # 2. Events attached to open alerts (NEW, ACKNOWLEDGED, INVESTIGATING, ESCALATED)
         active_alert_events = set(
             db.scalars(
                 select(AlertEvent.event_id)
                 .join(Alert, Alert.id == AlertEvent.alert_id)
                 .where(
                     Alert.organization_id == organization_id,
-                    Alert.status.in_(["NEW", "INVESTIGATING"]),
+                    Alert.status.in_(["NEW", "ACKNOWLEDGED", "INVESTIGATING", "ESCALATED"]),
                 )
             )
         )
@@ -154,10 +154,20 @@ class RetentionEngine:
         for i in range(0, len(eligible_to_delete), batch_size):
             chunk = eligible_to_delete[i : i + batch_size]
             with db.begin_nested():
-                # Delete auxiliary and relationship references
-                db.execute(delete(SearchJob).where(SearchJob.event_id.in_(chunk)))
+                # Delete auxiliary and relationship references with explicit tenant scoping
+                db.execute(
+                    delete(SearchJob).where(
+                        SearchJob.event_id.in_(chunk),
+                        SearchJob.organization_id == organization_id,
+                    )
+                )
                 db.execute(delete(IOCMatch).where(IOCMatch.event_id.in_(chunk)))
-                db.execute(delete(EntityRelationship).where(EntityRelationship.event_id.in_(chunk)))
+                db.execute(
+                    delete(EntityRelationship).where(
+                        EntityRelationship.event_id.in_(chunk),
+                        EntityRelationship.organization_id == organization_id,
+                    )
+                )
                 db.execute(delete(AlertEvent).where(AlertEvent.event_id.in_(chunk)))
 
                 db.execute(
