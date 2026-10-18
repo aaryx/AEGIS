@@ -38,6 +38,7 @@ AEGIS TITAN Phase 3 resolves all four high-priority security and reliability fin
   - `tests/test_titan_phase3_security_hardening.py`: 11 new regression tests verifying H-001 through H-004.
 
 ### Commit 3: README Overhaul & Phase 3 Technical Documentation
+- **Commit SHA:** `3684b20`
 - **Commit Message:** `docs(readme): overhaul documentation with architecture and honest status matrix`
 - **Scope & Highlights:**
   - `README.md`: Complete 23-section overhaul covering project identity, architecture diagrams, verified technology stack, prerequisites, copy-paste local development commands, environment variable reference, CLI commands, API docs, detection/UEBA/SOAR details, security model, and honest limitations.
