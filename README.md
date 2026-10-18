@@ -1,621 +1,604 @@
-# AEGIS — SIEM/SOAR Platform
+# AEGIS — Security Intelligence and Operations Platform
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python 3.12+](https://img.shields.io/badge/Python-3.12%20%7C%203.13%20%7C%203.14-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
-[![Next.js 16](https://img.shields.io/badge/Frontend-Next.js%2016-black.svg)](https://nextjs.org/)
-[![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL%2017-336791.svg)](https://www.postgresql.org/)
-[![OpenSearch](https://img.shields.io/badge/Search-OpenSearch%202.x-005EB8.svg)](https://opensearch.org/)
-[![Type Checked: Mypy](https://img.shields.io/badge/Typing-Mypy%20Strict-informational.svg)](https://mypy-lang.org/)
-[![Linted: Ruff](https://img.shields.io/badge/Code%20Style-Ruff-orange.svg)](https://astral.sh/ruff)
+[![Python: 3.12+](https://img.shields.io/badge/Python-3.12%20%7C%203.13%20%7C%203.14-3776AB.svg?logo=python&logoColor=white)](pyproject.toml)
+[![FastAPI: 0.135](https://img.shields.io/badge/Backend-FastAPI%200.135-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![Next.js: 16.4](https://img.shields.io/badge/Frontend-Next.js%2016.4-black.svg?logo=next.js&logoColor=white)](https://nextjs.org)
+[![PostgreSQL: 17](https://img.shields.io/badge/Database-PostgreSQL%2017-336791.svg?logo=postgresql&logoColor=white)](https://www.postgresql.org)
+[![OpenSearch: 2.11+](https://img.shields.io/badge/Search-OpenSearch%202.11+-005EB8.svg?logo=opensearch&logoColor=white)](https://opensearch.org)
+[![Type Checked: Mypy](https://img.shields.io/badge/Typing-Mypy%20Strict-blue.svg)](pyproject.toml)
+[![Code Style: Ruff](https://img.shields.io/badge/Code%20Style-Ruff-orange.svg)](https://astral.sh/ruff)
+[![Tests: 506 Passed](https://img.shields.io/badge/Tests-506%20Passed%20%7C%2027%20Skipped-brightgreen.svg)](tests/)
 
-> **A high-performance, open-source Security Information & Event Management (SIEM) and Security Orchestration, Automation, and Response (SOAR) platform engineered with cryptographic endpoint verification, deterministic multi-stage detection, and tamper-evident audit trails.**
+> **AEGIS is an open-source, multi-tenant Security Information & Event Management (SIEM) and Security Orchestration, Automation, and Response (SOAR) platform featuring asymmetric cryptographic endpoint verification, multi-stage behavioral detection, and tamper-evident audit trails.**
 
 ---
 
 ## Table of Contents
 
-- [Overview & Problem Statement](#overview--problem-statement)
-- [Key Features](#key-features)
-  - [Implemented Capabilities](#implemented-capabilities)
-  - [Planned Milestones](#planned-milestones)
-- [System Architecture](#system-architecture)
-  - [Architecture Diagram](#architecture-diagram)
-  - [Event Lifecycle & SOAR Execution Flow](#event-lifecycle--soar-execution-flow)
-- [Technology Stack](#technology-stack)
-- [Repository Structure](#repository-structure)
-- [Prerequisites](#prerequisites)
-- [Installation & Setup](#installation--setup)
-  - [Option A: Containerized Deployment (Docker Compose)](#option-a-containerized-deployment-docker-compose)
-  - [Option B: Local Development Setup](#option-b-local-development-setup)
-- [Environment Configuration](#environment-configuration)
-- [Database Migrations](#database-migrations)
-- [Running Components](#running-components)
-- [Operational Commands & API Examples](#operational-commands--api-examples)
-  - [CLI Reference](#cli-reference)
-  - [API Endpoints](#api-endpoints)
-- [Testing, Linting, & Quality Assurance](#testing-linting--quality-assurance)
-- [Security Architecture](#security-architecture)
-- [Performance Benchmarks](#performance-benchmarks)
-- [Limitations & Known Risks](#limitations--known-risks)
-- [Roadmap](#roadmap)
-- [Responsible Disclosure & Security Policy](#responsible-disclosure--security-policy)
-- [License & Contributing](#license--contributing)
+1. [Project Identity](#1-project-identity)
+2. [Project Overview](#2-project-overview)
+3. [Feature Matrix](#3-feature-matrix)
+4. [Architecture](#4-architecture)
+5. [Technology Stack](#5-technology-stack)
+6. [Repository Structure](#6-repository-structure)
+7. [Prerequisites](#7-prerequisites)
+8. [Installation and Local Development](#8-installation-and-local-development)
+9. [Environment Variables](#9-environment-variables)
+10. [Running the Application](#10-running-the-application)
+11. [CLI Documentation](#11-cli-documentation)
+12. [API Documentation](#12-api-documentation)
+13. [Detection, Correlation & Threat Intelligence](#13-detection-correlation--threat-intelligence)
+14. [User and Entity Behavior Analytics (UEBA)](#14-user-and-entity-behavior-analytics-ueba)
+15. [SOAR & Endpoint Containment](#15-soar--endpoint-containment)
+16. [Security Model](#16-security-model)
+17. [Testing & Quality Assurance](#17-testing--quality-assurance)
+18. [Deployment Profiles](#18-deployment-profiles)
+19. [Known Limitations & Roadmap](#19-known-limitations--roadmap)
+20. [Contributing](#20-contributing)
+21. [Security Reporting](#21-security-reporting)
+22. [License & Acknowledgements](#22-license--acknowledgements)
+23. [Release Verification Summary](#23-release-verification-summary)
 
 ---
 
-## Overview & Problem Statement
+## 1. Project Identity
 
-Modern enterprise Security Operations Centers (SOCs) are frequently overwhelmed by noisy detection rules, siloed log storage, slow manual triage, and opaque incident workflows. Furthermore, traditional SIEM platforms often separate event ingestion from active response, requiring brittle third-party integrations for host isolation and containment.
-
-**AEGIS** is designed as a unified, self-contained SIEM and SOAR platform that bridges detection engineering, investigation workflows, and authenticated endpoint response:
-1. **Durable, High-Throughput Ingestion:** Ingests raw RFC 5424/3164 Syslog, auditd, cloud exports, and endpoint telemetry without data loss, utilizing PostgreSQL concurrency controls (`FOR UPDATE SKIP LOCKED`) and OpenSearch indexing.
-2. **Deterministic Correlation:** Evaluates 34 behavioral detection rules across threshold, aggregation, ordered sequence, and periodicity primitives.
-3. **Cryptographically Verified SOAR:** Enforces asymmetric Ed25519 signature verification on endpoint agents, two-person human approval workflows for host containment, and HMAC-SHA256 verifiable audit records.
-4. **Single Source of Truth:** The Next.js SOC console queries the live detection store directly, preventing desynchronized dashboard metrics.
-
----
-
-## Key Features
-
-### Implemented Capabilities
-
-- **Multi-Protocol Ingestion Engine:**
-  - High-throughput Syslog daemon supporting UDP and TCP framing (octet counting and newline framing per RFC 6587 / RFC 5424 / RFC 3164).
-  - Pre-built parsers for Linux authentication logs, web access logs (Nginx/Apache), Windows Event logs, systemd journald, Docker daemon logs, and cloud provider exports.
-  - Idempotent ingestion pipeline with deduplication, payload bounds (64 KB maximum per event), and dead-letter queue isolation for malformed events.
-
-- **Behavioral Detection & Correlation Engine:**
-  - 34 built-in detection rules mapped to MITRE ATT&CK techniques (brute force, privilege escalation, credential dumping, lateral movement, persistence).
-  - Multi-stage rule logic supporting simple thresholding, grouped distinct aggregations, ordered sequence tracking, periodicity analysis, and baseline deviation.
-  - Incident grouping engine aggregating multi-stage alerts into unified compromise chains with entity graph extraction (IP, user, host, hash).
-
-- **Cryptographic Endpoint Agent & SOAR Automation:**
-  - Agent key registration with Ed25519 asymmetric public-key identity.
-  - Canonical SHA-256 payload signing and timestamp/nonce replay defense (300-second sliding acceptance window).
-  - OS-level network containment via Windows `netsh advfirewall` and Linux `iptables`, featuring automatic expiry timers.
-  - Mandatory two-person approval gate for destructive SOAR actions (e.g. process termination, host isolation).
-  - Cryptographic execution receipts verifying SOAR command outcomes.
-
-- **Enterprise Security & Access Controls:**
-  - Argon2id password hashing with precomputed dummy hash timing-safe fallback (mitigates username enumeration and CPU-exhaustion DoS).
-  - Multi-Factor Authentication (TOTP via RFC 6238) with enrollment, verification, and recovery flows.
-  - Strict Role-Based Access Control (RBAC) with 6 permission tiers: `VIEWER`, `ANALYST`, `SENIOR_ANALYST`, `SOC_MANAGER`, `SECURITY_ADMIN`, and `SUPER_ADMIN`.
-  - Secure session cookies, CSRF token rotation, rate-limiting headers, and scoped API tokens with SHA-256 storage.
-  - Tamper-evident audit log with incremental HMAC-SHA256 chain verification.
-
-- **Data Lifecycle & Compliance:**
-  - Automated retention worker with legal hold protections, soft-deletion policies, and batch deletion windows.
-  - Dedicated database maintenance identity support.
-  - Sanitized CSV exports with spreadsheet formula injection protection (`=`, `+`, `-`, `@`, `\t`, `\r` escaping).
-  - Outbound SSRF defense blocking loopback, RFC 1918 private subnets, link-local, and cloud metadata addresses (`169.254.169.254`).
-
-- **User Interfaces:**
-  - **SOC Web Console:** Built on Next.js 16, React 19, Tailwind CSS, Lucide icons, and TanStack Query.
-  - **Operational CLI:** Full-featured command-line utility built with Typer for analyst workflows, attack simulation, and incident management.
-
-### Planned Milestones
-
-- Distributed worker cluster orchestration via Celery/Temporal for horizontal scale beyond 50,000 EPS.
-- Sigma rule format native compiler and bi-directional Sigma rule synchronization.
-- eBPF-based kernel telemetry probe for Linux endpoint monitoring.
-- Native STIX/TAXII 2.1 threat intelligence feed integration.
+- **Platform Name:** AEGIS (Security Intelligence and Operations Platform)
+- **One-Line Description:** A unified, tenant-isolated SIEM and SOAR platform engineered with Ed25519-signed endpoint telemetry, multi-stage detection correlation, and tamper-evident audit chains.
+- **Problem Statement:** Modern enterprise Security Operations Centers (SOCs) struggle with brittle telemetry pipelines, desynchronized analytics stores, slow manual triage, and active response mechanisms that lack cryptographic endpoint attestation.
+- **Intended Users:** Security operations engineers, detection engineers, SOC analysts, and incident responders seeking a transparent, self-hosted, and verifiable alternative to proprietary SIEM/SOAR monoliths.
+- **Current Maturity:** **Developer Preview / Hardening in Progress.**
+- **Important Limitations:** AEGIS is **NOT** currently certified as an enterprise appliance or autonomous containment agent. **Production-pilot qualification remains BLOCKED** pending live distributed cluster qualification (PostgreSQL 17, Redis 7, OpenSearch 2.11) and live Linux kernel namespace validation.
 
 ---
 
-## System Architecture
+## 2. Project Overview
 
-### Architecture Diagram
+### The Security Operations Challenge
+Traditional SOC architectures suffer from architectural fragmentation: log shippers forward raw telemetry into search lakes, disparate rule engines generate disconnected alerts, and external SOAR tools dispatch containment commands over unverified transport without cryptographic endpoint receipts.
+
+### The AEGIS Workflow
+1. **Durable Telemetry Ingestion:** RFC 5424/3164 Syslog (UDP/TCP), cloud audit logs, and endpoint agent events stream into the platform, guarded by bounded event payloads (64 KB) and pessimistic tenant queue capacity enforcement.
+2. **Deterministic Detection & Correlation:** Workers evaluate 34 built-in behavioral detection rules across threshold, aggregation, ordered sequence, and periodicity primitives, mapping findings directly to MITRE ATT&CK techniques.
+3. **Storyline Correlation & Entity Linking:** Related alerts converge into cohesive attack storylines with extracted entity graphs (hosts, users, IPs, hashes), eliminating duplicate incident notifications.
+4. **Cryptographic SOAR Containment:** Responders initiate containment workflows governed by mandatory two-person human approval gates. Endpoint commands and execution receipts are signed via Ed25519 asymmetric key pairs with monotonic nonces and timestamp freshness checks.
+5. **Tamper-Evident Auditing:** Every administrative, investigative, and automated state transition appends to an HMAC-SHA256 hash chain with external WORM / S3 Object Lock anchoring capabilities.
+
+---
+
+## 3. Feature Matrix
+
+| Capability | Current Status | Relevant Module / Path | Verification Evidence / Current Limitations |
+| :--- | :--- | :--- | :--- |
+| **Multi-Tenant Ingestion** | **Implemented** | [`aegis/pipeline.py`](file:///d:/Project/Aegis/aegis/pipeline.py) | Verified under concurrency (`test_titan_phase3_security_hardening.py`). Serialized via `lock_tenant`. |
+| **RFC Syslog Receiver** | **Implemented** | [`aegis/syslog.py`](file:///d:/Project/Aegis/aegis/syslog.py) | Octet counting & newline framing verified across UDP/TCP sockets (`test_syslog.py`). |
+| **Behavioral Detection (34 Rules)** | **Implemented** | [`aegis/rules.py`](file:///d:/Project/Aegis/aegis/rules.py), [`aegis/detection.py`](file:///d:/Project/Aegis/aegis/detection.py) | Multi-stage, windowed state correlation verified in `test_detection.py`. |
+| **Storyline Correlation** | **Implemented** | [`aegis/storylines.py`](file:///d:/Project/Aegis/aegis/storylines.py) | Entity graph clustering and timeline ordering verified in `test_storylines.py`. |
+| **MITRE ATT&CK Mapping** | **Implemented** | [`aegis/rules.py`](file:///d:/Project/Aegis/aegis/rules.py) | 34 built-in rules mapped to T-codes; CLI inspection via `aegis mitre`. |
+| **UEBA Risk Scoring** | **Implemented** | [`aegis/ueba.py`](file:///d:/Project/Aegis/aegis/ueba.py) | Bounded statistical baseline (14 days, >=20 obs); verified in `test_ueba.py`. Rule-based, not predictive ML. |
+| **Threat Intelligence (IOCs)** | **Partially Implemented** | [`aegis/integrations.py`](file:///d:/Project/Aegis/aegis/integrations.py) | Local cache & mock provider verified; VirusTotal integration implemented but disabled by default. |
+| **SOAR Approval Workflow** | **Implemented** | [`aegis/soar.py`](file:///d:/Project/Aegis/aegis/soar.py), [`aegis/response.py`](file:///d:/Project/Aegis/aegis/response.py) | Two-person rule enforced for destructive actions; verified in `test_soar.py`. |
+| **Endpoint Containment (Agent)** | **Implemented / Hardened**| [`aegis/agent.py`](file:///d:/Project/Aegis/aegis/agent.py), [`aegis/endpoint_firewall.py`](file:///d:/Project/Aegis/aegis/endpoint_firewall.py)| Subprocess-mocked firewall isolation; live Linux network namespace execution pending. |
+| **Agent Cryptography & Receipts** | **Implemented** | [`aegis/crypto.py`](file:///d:/Project/Aegis/aegis/crypto.py), [`aegis/api.py`](file:///d:/Project/Aegis/aegis/api.py) | Ed25519 signing, monotonic nonces, 300s window; key revocation races resolved in Phase 3. |
+| **Tamper-Evident Audit Trail** | **Implemented** | [`aegis/security.py`](file:///d:/Project/Aegis/aegis/security.py) | HMAC-SHA256 sequential chain; external WORM/S3 Object Lock anchoring supported. |
+| **Transport Encryption (TLS)** | **Implemented** | [`aegis/config.py`](file:///d:/Project/Aegis/aegis/config.py) | Production requires `sslmode=verify-full`, `sslrootcert`, `rediss://`, and HTTPS OpenSearch. |
+| **SOC Console Web UI** | **Implemented** | `web/` (Next.js 16.4 / React 19) | 35 Vitest tests passed; verified against backend API contracts. |
+| **Operational CLI** | **Implemented** | [`aegis/cli.py`](file:///d:/Project/Aegis/aegis/cli.py) | 36 operational subcommands verified via Typer runner. |
+
+---
+
+## 4. Architecture
+
+AEGIS is partitioned into decoupled control, processing, and storage planes:
 
 ```mermaid
 flowchart TB
-    subgraph Sources["Event Sources & Telemetry"]
-        syslog["RFC 5424 / 3164 Syslog<br/>(UDP / TCP / TLS)"]
+    subgraph IngestionPlane["Ingestion & Telemetry Sources"]
+        syslog["Syslog Listener (5514 UDP/TCP)<br/>RFC 5424 / RFC 3164"]
         agent["AEGIS Endpoint Agent<br/>(Ed25519 Signed Telemetry)"]
-        api_in["External Webhooks / APIs<br/>(Linux auth, Web, Cloud)"]
+        api_in["HTTP Batch Ingestion<br/>(/api/v1/events)"]
     end
 
-    subgraph Core["AEGIS Core Backend (FastAPI)"]
-        ingest["Ingestion & Parser Engine<br/>(Normalization, Schema Validation)"]
-        auth["Security & Access Gateway<br/>(Argon2id, TOTP MFA, RBAC, CSRF)"]
-        api["REST API & GraphQL Endpoints<br/>(/api/v1)"]
+    subgraph ControlPlane["API & Authentication Gateway (FastAPI)"]
+        gateway["FastAPI REST Core<br/>Argon2id · TOTP MFA · CSRF Protection"]
+        rbac["RBAC & Tenant Isolation Gate<br/>(6 Permission Tiers)"]
+        router["API Routes & OpenAPI Docs<br/>(/api/v1/...)"]
     end
 
-    subgraph DataPlane["Storage & Queuing"]
-        db[("Primary Relational Database<br/>PostgreSQL 17 / SQLite<br/>(FOR UPDATE SKIP LOCKED)")]
-        search[("Search & Analytics Store<br/>OpenSearch 2.x<br/>(Escaped Lucene AST)")]
-        audit_trail[("Tamper-Evident Audit Chain<br/>(HMAC-SHA256 Chaining)")]
+    subgraph DataPlane["Storage & Queuing Tier"]
+        pg[("PostgreSQL 17 Primary<br/>Pessimistic Locking & Tenant Queues")]
+        redis[("Redis 7.4 Cluster<br/>Rate Limits & Ephemeral Locks")]
+        opensearch[("OpenSearch 2.11+<br/>Log Indexing & Lucene AST Search")]
+        audit_chain[("Tamper-Evident Audit Chain<br/>(HMAC-SHA256 Chaining & WORM)")]
     end
 
-    subgraph Workers["Detection & Processing Workers"]
-        detector["Behavioral Detection Engine<br/>(34 Sigma-style Behavioral Rules)"]
-        correlator["Incident & Entity Correlator<br/>(Compromise Chains & Graph)"]
-        ai_engine["AI Investigation Advisor<br/>(Deterministic Grounding / LLM)"]
-        retention["Lifecycle & Retention Worker<br/>(Legal Hold & Pruning)"]
+    subgraph WorkerPlane["Background Workers"]
+        worker["Detection & Pipeline Worker<br/>34 Behavioral Rules · MITRE ATT&CK"]
+        correlator["Storyline & Entity Correlator<br/>Incident Clustering & Graphs"]
+        notif["Notification & Intel Worker<br/>Webhooks · IOC Lookups"]
+        retention["Retention & Lifecycle Worker<br/>Legal Holds & Index Rollover"]
     end
 
-    subgraph Operations["Management & Response Interfaces"]
-        web["SOC Web Console<br/>(Next.js 16 + React 19)"]
-        cli["AEGIS Operational CLI<br/>(Python Typer)"]
-        soar["SOAR Action Dispatcher<br/>(Cryptographic Host Isolation)"]
+    subgraph OperationsPlane["Operations & Response Interfaces"]
+        web["SOC Web Console<br/>(Next.js 16.4 + React 19)"]
+        cli["Operational CLI<br/>(Typer 0.24)"]
+        soar["SOAR Engine & Two-Person Gate<br/>Host Containment & Signed Receipts"]
     end
 
-    syslog --> ingest
-    agent -->|Ed25519 Signed Payload| auth
-    auth --> ingest
-    api_in --> auth
+    syslog --> gateway
+    agent -->|Ed25519 Signed Telemetry| gateway
+    api_in --> gateway
+    gateway --> rbac --> router
+    router --> pg
+    router --> redis
+    router --> opensearch
+    router --> audit_chain
 
-    ingest --> db
-    ingest --> search
-    auth --> audit_trail
-
-    db -->|SKIP LOCKED Work Claiming| detector
-    detector --> correlator
-    correlator --> db
-    correlator --> ai_engine
-
-    api --> db
-    api --> search
-    api --> audit_trail
-
-    web --> api
-    cli --> api
+    pg -->|SKIP LOCKED Work Queue| worker
+    worker --> correlator
+    correlator --> pg
     correlator --> soar
-    soar -->|Signed Command| agent
-    retention --> db
-    retention --> search
-```
+    soar -->|Signed Command Envelope| agent
+    agent -->|Signed Execution Receipt| router
 
-### Event Lifecycle & SOAR Execution Flow
+    notif --> pg
+    retention --> pg
+    retention --> opensearch
 
-```mermaid
-flowchart LR
-    E[Raw Security Event] --> P[Parser & Schema Validation]
-    P --> N[Normalized Event Envelope]
-    N --> Q[Durable Queue / DB Ingestion]
-    Q --> D{Rule Engine Evaluation}
-    D -->|No Match| S[Index to OpenSearch]
-    D -->|Match / Threshold| A[Generate Alert]
-    A --> C[Correlate into Incident]
-    C --> T[Timeline & Entity Linking]
-    T --> I{Requires Response?}
-    I -->|No| R[Analyst Investigation / Report]
-    I -->|Yes| App[Two-Person Approval Gate]
-    App -->|Approved| Act[Dispatch SOAR Action]
-    Act --> Ex[Agent Executes & Signs Receipt]
-    Ex --> Aud[Verify & Commit to Audit Chain]
+    web --> router
+    cli --> router
 ```
 
 ---
 
-## Technology Stack
+## 5. Technology Stack
 
-| Layer | Component | Version | Role / Purpose |
-| :--- | :--- | :--- | :--- |
-| **Backend Core** | FastAPI / Starlette | 0.115+ | High-throughput asynchronous REST API core |
-| **Language Runtime** | Python | 3.12+ (tested 3.14) | Application runtime for backend, workers, and CLI |
-| **CLI Framework** | Typer / Click | 0.15+ | Operational security console and administrative CLI |
-| **Database & ORM** | PostgreSQL / SQLAlchemy | 17 / 2.0+ | Relational persistence, tenant isolation, and work queues |
-| **Migrations** | Alembic | 1.14+ | Versioned database schema migrations |
-| **Search Engine** | OpenSearch | 2.11+ | Scalable log indexing, free-text search, and aggregation |
-| **Cache & Queue** | Redis | 7.x | Fast session cache and ephemeral lock coordination |
-| **Cryptography** | `cryptography` / `pyotp` | 44.0+ | Ed25519 digital signatures, Argon2id, and RFC 6238 TOTP |
-| **Frontend UI** | Next.js / React | 16.3 / 19.2 | Analysts' SOC console, event explorer, and alert triage |
-| **Testing** | Pytest / Vitest / Playwright | Latest | Unit, concurrency, adversarial, and end-to-end testing |
-| **Type Checking** | Mypy / TypeScript | Strict | Static analysis across Python backend and TypeScript web |
+### Backend Core
+- **Language Runtime:** Python 3.12+ (tested through Python 3.14.3)
+- **API Framework:** FastAPI 0.135.1, Starlette, Uvicorn 0.41.0
+- **Settings Management:** Pydantic v2 / Pydantic-Settings 2.14.2
+- **Database & ORM:** PostgreSQL 17 / SQLAlchemy 2.0.48 / Psycopg 3.3.3
+- **Schema Migrations:** Alembic 1.18.4
+- **Search & Analytics:** OpenSearch 2.11+ / `opensearch-py` 3.1.0
+- **Distributed Cache & Locking:** Redis 7.4+ / `redis-py` 7.3.0
+- **Cryptography:** `cryptography` 44.0+, `argon2-cffi` 25.1.0, `pyotp` 2.9.0
+- **CLI Framework:** Typer 0.24.1, Click, Rich 14.3.3
+- **Observability:** Prometheus Client 0.24.1, structured standard-library logging
+
+### Frontend Web Console
+- **Framework:** Next.js 16.4.0 (App Router, Turbopack)
+- **UI Library:** React 19.2.4, React DOM 19.2.4
+- **State & Data Fetching:** TanStack React Query 5.90.21
+- **Styling:** Tailwind CSS 4.2.1
+- **Icons & Visuals:** Lucide React 0.577.0, Recharts 3.8.0
+- **Testing:** Vitest 4.1.11, Testing Library (React 16.3.2 / Jest-DOM 6.9.1)
 
 ---
 
-## Repository Structure
+## 6. Repository Structure
 
 ```
 AEGIS/
-├── aegis/                          # Core Python SIEM/SOAR Package
-│   ├── agent.py                    # Endpoint agent daemon, host isolation, and signed receipts
-│   ├── ai.py                       # Grounded AI investigation advisor and risk summarizer
-│   ├── api.py                      # FastAPI REST application routes, auth, and rate limits
-│   ├── cli.py                      # Typer operational CLI commands
-│   ├── collector.py                # RFC 5424/3164 Syslog receiver (UDP/TCP framing)
-│   ├── config.py                   # Pydantic v2 application settings and env validation
-│   ├── crypto.py                   # Ed25519 signature signing, verification, and keys
-│   ├── db.py                       # SQLAlchemy models, composite indices, and DB engine
-│   ├── detection.py                # State-tracking and multi-event detection engine
-│   ├── integrations.py             # External threat intel, webhooks, and IOC ingestion
-│   ├── investigation.py            # Case management, timeline reconstruction, and reports
-│   ├── notification_worker.py      # Alert dispatcher for webhooks and SOC notifications
-│   ├── parsers.py                  # Syslog, Linux auth, web access, JSON event parsers
-│   ├── pipeline.py                 # Ingestion pipeline, batching, and rule evaluation
-│   ├── response.py                 # SOAR playbook engine and two-person approval actions
-│   ├── retention.py                # Automated data lifecycle, legal holds, and index cleanup
-│   ├── rules.py                    # 34 behavioral detection rules definitions
-│   ├── schemas.py                  # Pydantic validation models and request/response DTOs
-│   ├── security.py                 # Argon2id, TOTP, RBAC, HMAC audit chaining, SSRF defense
-│   ├── storage.py                  # OpenSearch client wrapper and LocalStorage fallback
-│   └── worker.py                   # Background queue processing and event dispatching
-├── demo-data/                      # Synthetic event fixtures for testing and demos
-├── docs/                           # Architecture, operations, runbooks, and security guides
-├── migrations/                     # Alembic database migrations (0001 through 0005)
-├── scripts/                        # Administrative scripts, benchmarks, and drills
-│   ├── acceptance.py               # Live deployment verification script
-│   ├── benchmark_pipeline.py       # Pipeline throughput benchmarking
-│   ├── benchmark_standalone.py     # Independent concurrency and ingestion benchmarks
-│   ├── configure.py                # Zero-leak secret and credential generator
-│   ├── dev.py                      # Development orchestration helper
-│   └── initialize.py               # Database bootstrap and demo-data seeder
-├── tests/                          # 168 automated Python tests
-│   ├── test_adversarial_verification.py  # Anti-DoS, timing safety, and injection tests
-│   ├── test_agent_security.py      # Ed25519 agent registration and signature validation
-│   ├── test_ai_grounding.py        # AI prompt injection defense and grounding tests
-│   ├── test_audit_and_mfa.py       # TOTP MFA and HMAC-SHA256 audit chain verification
-│   ├── test_concurrency_hardening.py # ThreadPool concurrency tests on rate limits & state
-│   ├── test_detection.py           # Behavioral detection rules test suite
-│   ├── test_migrations.py          # Alembic schema upgrade/downgrade verification
-│   ├── test_opensearch_hardening.py# Query sanitization and Lucene escaping tests
-│   ├── test_pipeline.py            # End-to-end pipeline ingestion idempotency tests
-│   ├── test_postgres_integration.py# Live PostgreSQL 17 dialect integration tests
-│   └── test_security.py            # RBAC matrix, IDOR, CSRF, and session security tests
-├── web/                            # Next.js 16 SOC web console
-│   ├── app/                        # Next.js App Router (pages and layouts)
-│   ├── components/                 # SOC console UI components (editor, triage, charts)
-│   ├── lib/                        # API client, auth helpers, navigation utilities
-│   └── tests/                      # Vitest unit tests and Playwright E2E specs
-├── compose.yaml                    # Multi-container Docker Compose definition
-├── Dockerfile                      # Production multi-stage Docker build for backend/worker
-├── pyproject.toml                  # Python package manifest, dependencies, and tool settings
-└── README.md                       # Repository documentation
+├── aegis/                          # Core Platform Package
+│   ├── agent.py                    # Endpoint agent daemon, signed dispatch, and containment
+│   ├── ai.py                       # Grounded AI investigation advisor and prompt defense
+│   ├── api.py                      # FastAPI REST routes, auth, rate-limiting, and receipts
+│   ├── audit_anchor.py             # S3 Object Lock and local WORM audit anchoring
+│   ├── cli.py                      # Typer operational CLI subcommands
+│   ├── collector.py                # RFC Syslog listener (UDP/TCP framing)
+│   ├── config.py                   # Pydantic Settings, environment validation, and TLS policies
+│   ├── containment.py              # Containment state machine and receipt outcome semantics
+│   ├── crypto.py                   # Ed25519 signing, verification, and key management
+│   ├── db.py                       # SQLAlchemy models, tables, indexes, and session makers
+│   ├── db_safety.py                # Database safety validator (prevents ambient target overrides)
+│   ├── detection.py                # Behavioral detection engine and sliding window evaluator
+│   ├── endpoint_firewall.py        # Safe OS firewall execution (Windows netsh / Linux iptables)
+│   ├── integrations.py             # Webhook dispatcher, SSRF guards, and threat intel
+│   ├── investigation.py            # Case management and timeline reconstruction
+│   ├── notification_worker.py      # Background worker for alert webhooks and IOC lookups
+│   ├── parsers.py                  # Syslog, Linux auth, web access, and cloud log parsers
+│   ├── pipeline.py                 # Ingestion pipeline, batching, and tenant capacity control
+│   ├── response.py                 # Legacy response router and playbook dispatch
+│   ├── retention.py                # Retention lifecycle, legal holds, and index pruning
+│   ├── rules.py                    # 34 behavioral detection rules and MITRE mappings
+│   ├── schemas.py                  # Pydantic request/response DTOs and validation schemas
+│   ├── security.py                 # Argon2id, TOTP MFA, RBAC, HMAC audit chaining, SSRF guard
+│   ├── soar.py                     # Versioned SOAR playbook engine and two-person approval gates
+│   ├── storylines.py               # Attack storyline correlation and entity graphs
+│   ├── syslog.py                   # High-throughput RFC 5424/3164 Syslog socket receiver
+│   ├── ueba.py                     # User & Entity Behavior Analytics baseline engine
+│   └── worker.py                   # Detection pipeline worker and queue consumer
+├── compose.yaml                    # Base Docker Compose service topology
+├── compose.production.yaml         # Production Compose overlay (verified TLS & CA bindings)
+├── docs/                           # Technical documentation, runbooks, and validation reports
+│   └── validation/                 # Structured engineering qualification reports
+│       └── project-titan-phase3/   # Phase 3 audit reports, concurrency matrices, and releases
+├── migrations/                     # Alembic database migrations (0001 through 0010)
+├── scripts/                        # Operational, benchmarking, and development utilities
+│   ├── configure.py                # Zero-leak credential and secret generator
+│   ├── dev.py                      # Local multi-process development orchestration
+│   ├── initialize.py               # Database bootstrap and demo data seeder
+│   └── integration_gate.py         # Release gate verifying PostgreSQL integration
+├── tests/                          # Automated backend test suite (506 tests)
+│   ├── test_titan_phase3_security_hardening.py # Phase 3 regressions (H-001 through H-004)
+│   ├── test_endpoint_containment.py            # Containment semantics & firewall safety
+│   ├── test_ironclad_qualification.py          # Cryptographic agent & replay qualification
+│   └── ...                                     # Multi-tenant, UEBA, SOAR, and pipeline suites
+└── web/                            # Next.js 16.4 SOC Web Console
+    ├── app/                        # Next.js App Router pages and layouts
+    ├── components/                 # Reusable UI component library
+    └── tests/                      # Frontend Vitest test suite (35 tests)
 ```
 
 ---
 
-## Prerequisites
+## 7. Prerequisites
 
-- **Python:** Version 3.12, 3.13, or 3.14.
-- **Node.js:** Version 20.x or 22.x LTS with `npm`.
-- **Docker & Docker Compose:** Required for containerized multi-service deployment.
-- **Hardware Recommendations:**
-  - Minimum: 4 GB RAM, 2 CPU cores.
-  - Recommended (with OpenSearch): 8 GB RAM, 4 CPU cores, 20 GB disk space.
-  - Linux Host Config: OpenSearch requires `vm.max_map_count=262144` (`sudo sysctl -w vm.max_map_count=262144`).
+Before installing AEGIS, ensure your host environment satisfies the verified minimum software requirements:
 
----
-
-## Installation & Setup
-
-### Option A: Containerized Deployment (Docker Compose)
-
-The fastest method to deploy AEGIS with all services (PostgreSQL, Redis, OpenSearch, API, Worker, and Next.js Web Console):
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/aaryx/AEGIS.git
-   cd AEGIS
-   ```
-
-2. **Generate safe, randomized environment credentials:**
-   ```bash
-   python scripts/configure.py
-   ```
-   *This creates a local `.env` file populated with cryptographically random secrets for database, OpenSearch, and audit keys. No credentials are stored in Git.*
-
-3. **Launch the container cluster:**
-   ```bash
-   docker compose up -d --build
-   ```
-
-4. **Verify container health:**
-   ```bash
-   docker compose ps
-   ```
-
-5. **Access the platform:**
-   - **SOC Web Console:** [http://localhost:3000](http://localhost:3000)
-   - **Backend REST API:** [http://localhost:8000/api/v1](http://localhost:8000/api/v1)
-   - **Interactive API Docs (Swagger):** [http://localhost:8000/docs](http://localhost:8000/docs)
-   - **ReDoc API Documentation:** [http://localhost:8000/redoc](http://localhost:8000/redoc)
-
-### Option B: Local Development Setup
-
-For lightweight development without Docker dependencies, AEGIS supports running in SQLite mode:
-
-1. **Create and activate a virtual environment:**
-   ```bash
-   python -m venv .venv
-   # Windows (PowerShell):
-   .venv\Scripts\Activate.ps1
-   # Linux/macOS:
-   source .venv/bin/activate
-   ```
-
-2. **Install dependencies:**
-   ```bash
-   python -m pip install --upgrade pip
-   python -m pip install -e ".[dev]"
-   ```
-
-3. **Bootstrap configuration and database:**
-   ```bash
-   cp .env.example .env
-   aegis bootstrap
-   ```
-
-4. **Install frontend packages:**
-   ```bash
-   npm --prefix web install
-   ```
-
-5. **Start development services:**
-   ```bash
-   python scripts/dev.py dev
-   ```
+- **Operating System:** Linux (Ubuntu 22.04+ / Debian 12+), macOS (13+), or Windows 11 / Windows Server 2022.
+- **Python:** Version `3.12.0` or higher (verified through `3.14.3`).
+- **Node.js:** Version `18.18.0` or higher (tested with Node `22.x` and Next.js `16.4.0`).
+- **Package Manager:** `pip` (Python) and `npm` (Node.js).
+- **Docker & Docker Compose (Optional for local dev, mandatory for full stack):** Docker Engine `24.0+`, Docker Compose `v2.20+`.
+- **OpenSSL / Cryptography Support:** Modern OpenSSL library supporting Ed25519 and SHA-256 primitives.
 
 ---
 
-## Environment Configuration
+## 8. Installation and Local Development
 
-Configuration is managed via environment variables or a `.env` file, validated at startup via Pydantic (`aegis/config.py`). Reference [.env.example](.env.example):
-
-| Variable | Default Value | Description |
-| :--- | :--- | :--- |
-| `ENVIRONMENT` | `development` | Operating environment (`development`, `staging`, `production`) |
-| `DATABASE_URL` | `sqlite:///./aegis.db` | SQLAlchemy connection string (PostgreSQL recommended in prod) |
-| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL for queues and cache |
-| `OPENSEARCH_URL` | `http://localhost:9200` | OpenSearch endpoint for distributed search indexing |
-| `AUDIT_SECRET` | *(Random 32+ char key)* | Secret key used for HMAC-SHA256 audit chaining |
-| `PUBLIC_ORIGIN` | `http://localhost:3000` | Frontend origin for CORS and CSRF header validation |
-| `COOKIE_SECURE` | `false` | Set to `true` in production to enforce HTTPS-only cookies |
-| `POSTGRES_PASSWORD` | *(Generated)* | Master PostgreSQL database password |
-| `BOOTSTRAP_USERNAME`| `admin` | Initial Super Admin username |
-| `BOOTSTRAP_PASSWORD`| *(Generated)* | Initial Super Admin password |
-| `MAX_EVENT_BYTES` | `65536` | Maximum allowed event payload size (64 KB) |
-| `RETENTION_DAYS` | `90` | Default event retention horizon in days |
-
----
-
-## Database Migrations
-
-Schema migrations are managed with Alembic. Migrations are executed automatically on container bootstrap, or manually via:
-
+### Step 1: Clone the Repository
 ```bash
-# Apply all pending migrations to the latest revision
+git clone https://github.com/aaryx/AEGIS.git
+cd AEGIS
+```
+
+### Step 2: Configure Python Virtual Environment
+**On Linux / macOS:**
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -e ".[dev]"
+```
+
+**On Windows (PowerShell):**
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install --upgrade pip
+pip install -e ".[dev]"
+```
+
+### Step 3: Configure Environment Secrets
+Generate local random deployment secrets without leaking them to shell history:
+```bash
+python scripts/configure.py
+```
+This generates a local `.env` file with `ENVIRONMENT=development`, strong random audit secrets, and administrative database credentials.
+
+### Step 4: Install Frontend Dependencies
+```bash
+cd web
+npm install
+cd ..
+```
+
+### Step 5: Initialize Database & Run Migrations
+For local development, SQLite is used by default:
+```bash
 alembic upgrade head
-
-# Inspect current revision status
-alembic current
-
-# Revert the latest migration
-alembic downgrade -1
+python scripts/initialize.py
 ```
-
-Migration history:
-- `0001_initial`: Base schema (users, tenants, events, alerts, incidents, audit logs)
-- `0002_durable_jobs`: Background jobs and search queue tables
-- `0003_tenant_integrity`: Multi-tenant isolation indices and constraint hardening
-- `0004_evidence_integrity`: Cryptographic hashes and evidence immutability triggers
-- `0005_agent_identity_and_hardening`: Ed25519 agent public keys, signature columns, composite rate-limit indices, and locked audit sequence counter
+*Note: `scripts/initialize.py` seeds initial demo organizations, users, and MITRE detection rules.*
 
 ---
 
-## Running Components
+## 9. Environment Variables
 
-### 1. Backend REST API
+| Variable Name | Purpose | Required / Optional | Safe Development Default | Production Requirement & Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `ENVIRONMENT` | Runtime environment profile | Optional | `development` | Must be `production` in live deployments. |
+| `DATABASE_URL` | Primary relational database connection URI | Required | `sqlite:///./aegis.db` | Production requires `postgresql+psycopg://` with `sslmode=verify-full` and `sslrootcert`. |
+| `REDIS_URL` | Distributed cache and queue connection URI | Optional (Dev) / Required (Prod) | `None` (in-memory fallback) | Production requires `rediss://` with authentication and valid TLS certificates. |
+| `REDIS_CA` | Path to custom Redis root CA certificate | Optional | `None` | Used when Redis uses a private enterprise CA bundle. |
+| `OPENSEARCH_URL` | OpenSearch analytics cluster endpoint | Optional (Dev) / Required (Prod) | `None` (LocalStorage fallback) | Production requires `https://` with valid hostname. |
+| `OPENSEARCH_CA` | Path to OpenSearch trusted root CA certificate | Required if OpenSearch enabled | `None` | Production strictly fails closed if `opensearch_ca` is missing. |
+| `OPENSEARCH_USERNAME`| OpenSearch basic auth username | Optional | `aegis` | Configured per OpenSearch internal security plugin. |
+| `OPENSEARCH_PASSWORD`| OpenSearch basic auth password | Optional | `""` | Keep secret; minimum 16 characters in production. |
+| `AUDIT_SECRET` | HMAC-SHA256 secret key for tamper-evident logs | Required | Auto-generated by `configure.py` | Must contain at least 32 characters in production. |
+| `COOKIE_SECURE` | Enforces `Secure` flag on HTTP session cookies | Optional (Dev) / Required (Prod) | `false` | Must be `true` in production; requires HTTPS. |
+| `PUBLIC_ORIGIN` | Publicly exposed web URL for CORS and CSRF | Required | `http://localhost:3000` | Must start with `https://` in production. |
+| `SESSION_HOURS` | User session token expiration duration | Optional | `8` | Bounded between 1 and 24 hours. |
+| `QUEUE_CAPACITY` | Max pending/retry event queue backlog per tenant | Optional | `100000` | Minimum 100; enforces tenant backpressure. |
+| `MAX_EVENT_BYTES` | Maximum allowable raw event size | Optional | `65536` (64 KB) | Bounded between 1 KB and 256 KB to prevent memory exhaustion. |
+| `AI_PROVIDER` | AI Copilot backend (`local`, `openai`, `azure`) | Optional | `local` | `openai`/`azure` requires HTTPS endpoint and `AI_API_KEY`. |
+
+---
+
+## 10. Running the Application
+
+### 1. Start the Backend REST API
 ```bash
-uvicorn aegis.api:app --host 0.0.0.0 --port 8000 --reload
+uvicorn aegis.api:create_app --factory --host 0.0.0.0 --port 8000 --reload
+```
+- API Base: `http://localhost:8000/api/v1`
+- Interactive OpenAPI Docs: `http://localhost:8000/docs`
+- Health Endpoint: `http://localhost:8000/health`
+
+### 2. Start the Frontend SOC Console
+```bash
+cd web
+npm run dev
+```
+Console is accessible at `http://localhost:3000`.
+
+### 3. Start Background Workers
+In separate terminal sessions or process supervisors:
+- **Detection & Correlation Worker:**
+  ```bash
+  python -m aegis.worker
+  ```
+- **Notification & Threat Intelligence Worker:**
+  ```bash
+  python -m aegis.notification_worker
+  ```
+- **Lifecycle & Retention Worker:**
+  ```bash
+  python -m aegis.retention
+  ```
+
+### 4. Start RFC Syslog Listener
+```bash
+aegis ingest syslog --listen 127.0.0.1:5514
 ```
 
-### 2. Detection & Ingestion Worker
+### 5. Running the Complete Stack with Docker Compose
+For containerized testing:
 ```bash
-python -m aegis.worker
+docker compose up -d
 ```
-
-### 3. Syslog Collector (RFC 5424 / RFC 3164)
+To run the production overlay (requires TLS certificates mounted):
 ```bash
-python -m aegis.collector --port 514 --protocol tcp
-```
-
-### 4. Data Lifecycle & Retention Daemon
-```bash
-python -m aegis.retention --interval 3600
-```
-
-### 5. SOC Web Frontend
-```bash
-npm --prefix web run dev
+docker compose -f compose.yaml -f compose.production.yaml up -d
 ```
 
 ---
 
-## Attack Storylines
+## 11. CLI Documentation
 
-Persisted alert correlation is available through the Storylines console and
-`aegis storylines correlate`. Upgrade to migration `0008` before deployment.
-See [correlation behavior, scoring, limits and workflow](docs/storylines.md).
+AEGIS provides an operational command-line utility built on Typer:
 
-## Operational Commands & API Examples
-
-### CLI Reference
-
-AEGIS includes a comprehensive CLI tool (`aegis`) built with Typer:
-
+### Syntax Overview
 ```bash
-# 1. Authenticate with the SIEM core
-aegis login --username admin
-
-# 2. Check cluster and database health
-aegis status
-
-# 3. Ingest sample security events
-aegis ingest file demo-data/auth.json
-aegis ingest file demo-data/web.json
-
-# 4. Simulate a multi-stage attack chain
-aegis simulate attack-chain
-
-# 5. List and filter generated alerts
-aegis alerts list --severity HIGH --json
-
-# 6. Query and hunt across events
-aegis hunt --query 'outcome = "failure"' --limit 50
-
-# 7. Investigate an incident timeline
-aegis investigate <ALERT-OR-INCIDENT-ID>
-
-# 8. Verify the cryptographic integrity of the audit log
-aegis audit verify
-
-# 9. Test detection rules
-aegis rules test --all
-
-# 10. Register an endpoint agent
-aegis agent register --host workstation-01 --ip 192.168.1.100
+aegis [GLOBAL-OPTIONS] COMMAND [ARGS]...
 ```
+*Global options include `--format [table|json|csv]`, `--url <API_URL>`, and `--verbose`.*
 
-### API Endpoints
+### Discovered Command Reference
 
-All endpoints require session authentication or an `X-API-Key` header, except `/api/v1/auth/login` and `/api/v1/health`.
-
-| Method | Endpoint | Description |
+| Command | Purpose | Example Usage |
 | :--- | :--- | :--- |
-| `POST` | `/api/v1/auth/login` | Authenticate credentials, start session, issue CSRF token |
-| `POST` | `/api/v1/auth/mfa/verify` | Validate TOTP 6-digit code for 2FA completion |
-| `POST` | `/api/v1/events/ingest` | Ingest single or batched security events |
-| `POST` | `/api/v1/agent/events` | Ingest Ed25519 cryptographically signed agent telemetry |
-| `GET` | `/api/v1/alerts` | Paginated list of security alerts with filtering |
-| `POST` | `/api/v1/incidents/{id}/contain` | Trigger host containment SOAR action |
-| `POST` | `/api/v1/response/approvals/{id}` | Approve or reject pending two-person SOAR actions |
-| `GET` | `/api/v1/audit/verify` | Execute live HMAC-SHA256 audit chain verification |
-| `POST` | `/api/v1/retention/run` | Trigger data retention pruning (supports dry-run) |
+| `aegis health` | Inspect health of all platform components | `aegis health` |
+| `aegis login` | Authenticate against API and acquire session | `aegis login --username admin` |
+| `aegis bootstrap` | Create initial administrator with direct DB access | `aegis bootstrap --username admin --role SUPER_ADMIN` |
+| `aegis rules` | List, inspect, and toggle behavioral detection rules | `aegis rules list` |
+| `aegis alerts` | Triage, acknowledge, and resolve security alerts | `aegis alerts list --status OPEN` |
+| `aegis incidents`| Manage aggregated multi-stage incidents | `aegis incidents list --severity critical` |
+| `aegis storylines`| Correlate and inspect attack storylines and graph | `aegis storylines list` |
+| `aegis ingest` | Ingest events from JSON files, directories, or Syslog | `aegis ingest file demo-data/brute-force.json` |
+| `aegis soar` | View playbooks, approve executions, inspect status | `aegis soar executions` |
+| `aegis agent` | Manage endpoint agents, enrollment, and daemon | `aegis agent run --server-url http://localhost:8000` |
+| `aegis iocs` | Query and manage IOC indicators and matches | `aegis iocs query 198.51.100.24` |
+| `aegis ueba` | Inspect user/host baseline deviations and risk | `aegis ueba users --min-score 50` |
+| `aegis audit` | Verify cryptographic HMAC integrity of audit logs | `aegis audit verify` |
+| `aegis mitre` | View coverage map against MITRE ATT&CK matrix | `aegis mitre matrix` |
+| `aegis simulate`| Replay synthetic attack drills against detection engine | `aegis simulate brute-force` |
 
 ---
 
-## Testing, Linting, & Quality Assurance
+## 12. API Documentation
 
-AEGIS enforces strict testing and static analysis standards:
+AEGIS exposes a tenant-isolated REST API versioned under `/api/v1`:
+
+- **Interactive Documentation:** Available in development at `/docs` (Swagger UI) and `/redoc` (ReDoc).
+- **Authentication Expectations:**
+  - **Browser Sessions:** Cookie-based (`aegis_session`), requiring `X-CSRF-Token` header on state-changing operations (`POST`, `PUT`, `DELETE`, `PATCH`).
+  - **API Clients & CLI:** Bearer tokens passed via `Authorization: Bearer <API_KEY_OR_TOKEN>`.
+  - **Endpoint Agents:** Registered Ed25519 asymmetric identity tokens with mandatory HMAC/Ed25519 payload signatures.
+- **Operational Boundaries:**
+  - Default rate limit: 30 requests per minute per IP / client token.
+  - Request body limit: 2 MB maximum (`max_request_bytes`).
+  - Event payload limit: 64 KB maximum per event (`max_event_bytes`).
+
+---
+
+## 13. Detection, Correlation & Threat Intelligence
+
+### Detection Architecture
+AEGIS ships with **34 built-in behavioral detection rules** mapped to MITRE ATT&CK techniques:
+- **Rule Primitives:** Simple thresholding, grouped distinct aggregations (e.g., distinct accounts targeted from one IP), ordered temporal sequences, and baseline anomaly detection.
+- **Durable Windows:** State is tracked in PostgreSQL `window_states` tables, evaluated iteratively by background workers claiming jobs via `FOR UPDATE SKIP LOCKED`.
+
+### Storyline Correlation & Entity Graph
+Alerts sharing common entities (hosts, usernames, internal IP addresses) within configurable time windows are correlated into cohesive **Attack Storylines**. The correlation engine computes entity link graphs, reconstructing adversary lateral movement across the fleet.
+
+### Threat Intelligence (IOCs)
+- Normalized indicators: IPv4, IPv6, SHA-256, MD5, domain, and URL.
+- Local high-speed cache with configurable TTL (default: 3,600 seconds).
+- Optional VirusTotal provider (disabled by default, requires operator API key).
+- External lookups enforce strict outbound SSRF defense, disallowing internal RFC 1918 subnets, loopbacks, and cloud metadata addresses (`169.254.169.254`).
+
+---
+
+## 14. User and Entity Behavior Analytics (UEBA)
+
+The UEBA engine detects stealthy credential abuse and insider threats:
+- **Baseline Requirements:** Requires a minimum observation window (default: 14 days, minimum 20 observations across 7 active days) before computing anomalies, preventing false positives during cold starts.
+- **Implemented Detectors:**
+  1. Anomalous authentication hours relative to user baseline.
+  2. Geographic velocity and impossible travel anomalies.
+  3. Excessive failed authentications preceding successful login.
+  4. Sudden privilege escalation spikes.
+- **Scoring:** Computes a normalized risk score (0 to 100).
+- **Operational Limitation:** The UEBA engine uses bounded statistical baseline algorithms; it does not claim generative or predictive machine learning capabilities.
+
+---
+
+## 15. SOAR & Endpoint Containment
+
+### Playbook Execution & Human-in-the-Loop
+AEGIS enforces strict boundaries around automated response:
+- **Two-Person Approval Gate:** Destructive actions (e.g., `isolate_host`, `terminate_process`, `quarantine_file`) cannot be executed by the initiating analyst alone. Approval is required from an independent user holding `SOC_MANAGER` or `SUPER_ADMIN` privileges.
+- **Simulation Mode:** Operators can run playbooks in dry-run/simulation mode to verify action logic without modifying endpoint states.
+
+### Endpoint Agent Security & Containment
+- **Asymmetric Attestation:** Agents enroll using unique enrollment tokens and register Ed25519 public keys.
+- **Signed Dispatch & Nonce Defense:** The AEGIS controller signs command envelopes using its private key. The agent verifies controller signatures, evaluates timestamp freshness (300-second window), and rejects replayed nonces.
+- **Firewall Isolation:** Containment applies host firewall rules (Windows `netsh advfirewall` and Linux `iptables`) that drop inbound and outbound traffic while strictly preserving loopback and control-plane communication with the AEGIS controller IP. Global firewall flushes are strictly prohibited.
+- **Signed Execution Receipts:** Following action execution, the agent signs an Ed25519 execution receipt containing the execution ID, status, and output. The controller verifies the receipt signature and commits the result to the tamper-evident audit log.
+
+---
+
+## 16. Security Model
+
+| Security Dimension | Implemented Defensive Control |
+| :--- | :--- |
+| **Authentication** | Argon2id password hashing with dummy-hash timing-safe fallback; RFC 6238 TOTP MFA; 15-minute account lockouts after 5 failed attempts. |
+| **Authorization** | Strict RBAC with 6 permission tiers (`VIEWER`, `ANALYST`, `SENIOR_ANALYST`, `SOC_MANAGER`, `SECURITY_ADMIN`, `SUPER_ADMIN`). |
+| **Tenant Isolation** | Multi-tenant organization scoping enforced on all database queries; row-level isolation; pessimistic tenant locking (`lock_tenant`). |
+| **Agent Key Handling** | Ed25519 asymmetric cryptography; monotonic nonces; key rotation with audit trail; atomic in-flight command cancellation upon revocation. |
+| **Audit Integrity** | Append-only HMAC-SHA256 hash chain over `(previous_hash, timestamp, actor, action, tenant)`. Supports WORM and S3 Object Lock anchoring. *(Note: An HMAC chain does not prevent log deletion if an attacker possesses both database write access and the server's HMAC secret; external WORM anchoring is required for regulatory compliance).* |
+| **Transport Security** | Production configurations fail closed if PostgreSQL, Redis, or OpenSearch connections lack verified TLS and trusted CA validation. |
+| **Network Boundaries** | Outbound webhooks enforce SSRF guards blocking RFC 1918 subnets, loopbacks, and cloud metadata endpoints. |
+
+---
+
+## 17. Testing & Quality Assurance
+
+AEGIS maintains a rigorous testing methodology combining unit, regression, concurrency, adversarial, and static analysis gates.
+
+### Test Execution Commands & Verified Results
 
 ```bash
-# 1. Run full Python test suite (168 tests)
-pytest
+# 1. Run full backend test suite
+pytest tests -q
+# Result: 506 passed, 27 skipped in ~230s
 
-# 2. Run Python linting and formatting checks (Ruff)
-ruff check .
+# 2. Run dedicated Phase 3 security hardening suite
+pytest tests/test_titan_phase3_security_hardening.py -q
+# Result: 11 passed in 4.7s
 
-# 3. Run strict static type checking (Mypy)
-mypy aegis tests
+# 3. Run endpoint containment and firewall suite
+pytest tests/test_endpoint_containment.py -q
+# Result: 35 passed in 14.4s
 
-# 4. Run frontend type checking (TypeScript)
-npm --prefix web run typecheck
+# 4. Run frontend Vitest suite
+npm --prefix web test -- --run
+# Result: 35 passed across 8 test files in 4.3s
 
-# 5. Run frontend unit tests (Vitest)
-npm --prefix web run test
+# 5. Compile frontend production bundle
+npm --prefix web run build
+# Result: Compiled successfully; static optimization passed
 
-# 6. Execute PostgreSQL concurrency integration test suite
-# (Requires running PostgreSQL instance)
-AEGIS_POSTGRES_TEST_URL="postgresql+psycopg://postgres:postgres@localhost:5432/aegis_test" pytest tests/test_postgres_integration.py
+# 6. Run static type checking (Mypy)
+mypy aegis --ignore-missing-imports
+# Result: Success: no issues found in 41 source files
 
-# 7. Run standalone ingestion and pipeline benchmarks
-python scripts/benchmark_standalone.py
+# 7. Run code style & linting (Ruff)
+ruff check aegis tests
+# Result: All checks passed!
+
+# 8. Run static security analysis (Bandit)
+bandit -r aegis -ll -q
+# Result: 0 High, 0 Medium vulnerabilities detected
 ```
 
-### Verified Test Suite Summary
+---
 
-- **Total Test Cases:** 168 tests across 18 test modules
-- **Unit & Pipeline Tests:** 161 passed (100% pass rate in base environment)
-- **Live Integration Tests:** 6 PostgreSQL concurrency tests (skipped cleanly when live DB URL not provided)
-- **Code Coverage:** Full coverage across authentication, authorization, agent crypto, detection rules, and retention
-- **Static Typing:** 0 issues found across 46 Python source files in Mypy strict mode
+## 18. Deployment Profiles
+
+### Development Profile
+- Intended for local feature development, testing, and UI validation.
+- Database: Local SQLite file (`aegis.db`) with WAL mode.
+- Cache & Search: In-memory queues and local storage fallback.
+- Security: TLS requirements relaxed for `localhost`.
+
+### Staging Profile
+- Intended for end-to-end integration and load testing.
+- Topology: Docker Compose with standalone PostgreSQL 17, Redis 7.4, and OpenSearch 2.11 containers.
+- Execution: `docker compose up -d`.
+
+### Production Profile (Overlay)
+- Intended for hardened enterprise deployment.
+- Topology: Managed PostgreSQL 17 cluster, Redis 7 cluster, OpenSearch 2.11 cluster.
+- Security Requirements:
+  - `ENVIRONMENT=production`
+  - `COOKIE_SECURE=true`
+  - `PUBLIC_ORIGIN=https://...`
+  - `DATABASE_URL`: Must specify `sslmode=verify-full` and `sslrootcert`.
+  - `REDIS_URL`: Must specify `rediss://` with authentication and required certificate verification.
+  - `OPENSEARCH_URL`: Must specify `https://` and valid `OPENSEARCH_CA`.
+- Deployment Command:
+  ```bash
+  docker compose -f compose.yaml -f compose.production.yaml up -d
+  ```
+- **Qualification State:** **BLOCKED** pending physical multi-node infrastructure verification.
 
 ---
 
-## Security Architecture
+## 19. Known Limitations & Roadmap
 
-AEGIS employs defensive engineering patterns across every boundary:
+### Current Limitations
+1. **SQLite Concurrency in Dev:** SQLite locks the entire database file during writes, limiting local development ingestion concurrency to single-worker processes. PostgreSQL is required for multi-worker scaling.
+2. **Syslog UDP Framing:** UDP Syslog packets may be dropped under extreme network saturation. TCP Syslog with octet framing is recommended for production ingestion.
+3. **Hardware-Dependent Containment:** Endpoint firewall scripts currently require elevated administrative privileges (`Administrator` on Windows, `CAP_NET_ADMIN` / `root` on Linux).
+4. **Live Infrastructure Gate:** Automated tests currently skip 27 live tests when physical PostgreSQL/Redis/OpenSearch daemons are offline.
 
-1. **Cryptographic Endpoint Identity (`aegis/crypto.py`):**
-   - Agents register using asymmetric Ed25519 key pairs.
-   - Every telemetry packet and SOAR execution receipt includes a canonical SHA-256 payload digest signed by the agent's private key.
-   - Monotonic nonces and a 300-second timestamp freshness window prevent replay attacks.
-
-2. **Timing-Safe Authentication & Anti-DoS:**
-   - Password hashes use Argon2id with memory-hard parameters.
-   - For unknown usernames, the system performs a dummy Argon2id hash against a precomputed static digest, eliminating timing side-channels and CPU-exhaustion DoS attacks.
-   - Exponential rate limiting and automatic 15-minute account lockouts trigger after 5 consecutive failed login attempts.
-
-3. **Tamper-Evident HMAC-SHA256 Audit Trail:**
-   - Every administrative, investigative, and authentication event generates an append-only audit record.
-   - Each entry incorporates an HMAC-SHA256 signature calculated over `(previous_hash, timestamp, actor, action, tenant_id)`.
-   - Sequence numbers and head tracking prevent insertion, deletion, or modification of historical records.
-
-4. **Two-Person SOAR Approval Gate:**
-   - High-impact remediation actions (e.g., host isolation, credential revocation, process termination) cannot be executed by the triggering user alone.
-   - Actions require explicit approval from an independent analyst holding `SOC_MANAGER` or `SUPER_ADMIN` privileges.
-
-5. **SSRF & Injection Protections:**
-   - Outbound integration webhooks reject private IPv4/IPv6 subnets, loopback addresses (`127.0.0.1`), link-local IPs, and AWS/GCP metadata endpoints (`169.254.169.254`).
-   - OpenSearch queries sanitize user input via Lucene AST escaping.
-   - CSV exports sanitize leading formula trigger characters (`=`, `+`, `-`, `@`, `\t`, `\r`) to prevent spreadsheet exploitation.
+### Roadmap
+- [ ] **v1.1:** eBPF-based lightweight Linux kernel telemetry probe for process execution and network connect events.
+- [ ] **v1.2:** Native Sigma rule format compiler and bidirectional Sigma synchronization.
+- [ ] **v1.3:** Automated STIX/TAXII 2.1 threat intelligence feed subscription daemon.
+- [ ] **v1.4:** Distributed worker clustering via Celery / Temporal for horizontal scaling beyond 50,000 EPS.
+- [ ] **v1.5:** macOS endpoint containment provider via `pfctl` anchor rules.
 
 ---
 
-## Performance Benchmarks
+## 20. Contributing
 
-Measured on standard commodity workstation hardware (AMD Ryzen / Intel Core i7, NVMe storage):
-
-| Metric | Measured Result | Environment / Configuration |
-| :--- | :--- | :--- |
-| **Raw Ingestion Throughput** | **4,350 Events/sec** | In-memory batch ingestion pipeline |
-| **Worker Ingestion Throughput** | **1,220 Events/sec** | Durable PostgreSQL queue + OpenSearch indexer |
-| **Detection Correlation Rate** | **178 Events/sec** | Complex multi-stage behavioral rules |
-| **Syslog Receiver (TCP Framing)** | **8,500 Messages/sec**| RFC 5424 octet-counted socket parsing |
-| **Audit Verification Speed** | **12,400 Records/sec** | Sequential HMAC-SHA256 chain verification |
-| **Argon2id Hash Latency** | **120 ms** | Calibrated security threshold |
-
-*Reproducible benchmark scripts are available in [scripts/benchmark_standalone.py](scripts/benchmark_standalone.py) and [scripts/benchmark_pipeline.py](scripts/benchmark_pipeline.py).*
+We welcome contributions, bug reports, and detection rules from the security community:
+1. **Fork and Branch:** Create a feature branch matching `feature/<name>` or `fix/<name>`.
+2. **Coding Standards:** Format code using `ruff` (110 character line limit) and verify typing with `mypy`.
+3. **Testing:** All pull requests must include unit and regression tests.
+4. **Security Sensitive Code:** Any modifications to `aegis/security.py`, `aegis/crypto.py`, or `aegis/endpoint_firewall.py` require architectural review and threat modeling.
 
 ---
 
-## Limitations & Known Risks
+## 21. Security Reporting
 
-- **SQLite Concurrency:** When running in local development mode without PostgreSQL, SQLite database locking limits worker concurrency to a single process. PostgreSQL is mandatory for multi-worker production scale.
-- **Syslog Framing Buffer:** Extremely long single-line Syslog messages exceeding 64 KB are truncated to safeguard memory allocation.
-- **OpenSearch Memory Footprint:** OpenSearch requires at least 4 GB of available system memory; running the complete Compose stack on systems with under 8 GB RAM may cause container memory pressure.
-- **Agent OS Support:** Automated network containment scripts are implemented for Windows (`netsh`) and Linux (`iptables`). macOS `pfctl` support is currently planned.
+If you discover a security vulnerability or bypass in AEGIS, please report it privately:
 
----
-
-## Roadmap
-
-- [ ] **v1.1**: eBPF-based lightweight Linux kernel telemetry probe.
-- [ ] **v1.2**: Native Sigma rule compilation and continuous rule synchronization.
-- [ ] **v1.3**: STIX/TAXII 2.1 automated threat intelligence feed ingestion.
-- [ ] **v1.4**: Distributed worker clustering with Celery/Temporal.
-- [ ] **v1.5**: macOS endpoint containment support via `pfctl`.
+- **Email:** `aaryansingh24082005@gmail.com`
+- **Guidelines:** Include a detailed technical description and reproducible proof of concept. Please allow up to 48 hours for acknowledgment prior to coordinated public disclosure.
+- **Do NOT** open public GitHub issues for undisclosed security vulnerabilities.
 
 ---
 
-## Responsible Disclosure & Security Policy
+## 22. License & Acknowledgements
 
-Security vulnerabilities are taken seriously. If you discover a security vulnerability in AEGIS, please report it privately:
-
-1. **Do not create a public GitHub issue.**
-2. Email your findings with a reproducible proof of concept to **aaryansingh24082005@gmail.com**.
-3. We will acknowledge receipt within 48 hours and provide regular updates regarding remediation.
+- **License:** Distributed under the **MIT License**. See [LICENSE](LICENSE) for the full text.
+- **Copyright:** (c) 2026 Aaryan Singh. All rights reserved.
+- **Acknowledgements:** Built with inspiration from open-source security engineering communities, the MITRE ATT&CK framework, and Sigma detection standards.
 
 ---
 
-## License & Contributing
+## 23. Release Verification Summary
 
-- **License:** Distributed under the **MIT License**. See [LICENSE](LICENSE) for details.
-- **Contributing:** Contributions, bug fixes, and detection rules are welcome. Please read [docs/contributing.md](docs/contributing.md) before submitting pull requests.
-
-Copyright (c) 2026 Aaryan Singh. All rights reserved.
-
-## SOAR workflow automation
-
-Versioned, tenant-scoped response workflows are available in the console's Playbooks page and `aegis soar` CLI. The existing worker advances durable steps with approval gates, dry runs, safe containment simulations, and audit history. See [SOAR architecture, API, migration and operation](docs/soar.md). Apply Alembic revision `0009` before using this feature.
-
-## IOC enrichment and threat intelligence
-
-The existing Threat Intelligence view and `aegis iocs` CLI support normalized observables, optional VirusTotal reports, labelled mock fixtures, durable lookup history, and attributed investigation/SOAR context. See [provider setup, API, safety controls and verification handoff](docs/intelligence.md). Apply migration `0010`; the existing notification worker handles provider lookups. Providers and automatic lookup are disabled by default.
-
-### Behavioral risk intelligence
-
-See [UEBA operations and analyst guide](docs/ueba.md) for bounded analysis, detectors, risk scoring, API/CLI usage, tenant controls, and retention limits.
+- **Release Target:** TITAN Phase 3 Hardening Release
+- **Git Branch:** `feature/ironclad-qualification`
+- **Initial HEAD:** `33a5ea90a964e206fa63326322e46d296ae2efb1`
+- **Backend Quality:** 506 passed, 27 skipped, 0 failed across full Pytest suite.
+- **Frontend Quality:** 35 passed across Vitest suite; Next.js 16.4 production build passed.
+- **Static Verification:** 0 Mypy errors (41 files), 0 Ruff lint errors, 0 Bandit High/Medium issues.
+- **Production Pilot Status:** **BLOCKED** pending live distributed cluster qualification.
