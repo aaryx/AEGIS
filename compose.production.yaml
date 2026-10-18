@@ -34,7 +34,7 @@ services:
       - opensearch-data:/usr/share/opensearch/data
       - ./certs/opensearch:/usr/share/opensearch/config/certs:ro
     healthcheck:
-      test: [CMD-SHELL, 'curl -fsS --cacert /usr/share/opensearch/config/certs/root-ca.pem --user "admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD" https://localhost:9200/_cluster/health >/dev/null']
+      test: [CMD-SHELL, 'OS_AUTH="admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD"; curl -fsS --cacert /usr/share/opensearch/config/certs/root-ca.pem -u "$$OS_AUTH" https://localhost:9200/_cluster/health >/dev/null']
       interval: 15s
       timeout: 10s
       retries: 20

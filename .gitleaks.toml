@@ -7,10 +7,12 @@ paths = [
     '''tests/.*''',
     '''docs/.*''',
     '''compose\.yaml''',
+    '''compose\.production\.yaml''',
 ]
 regexes = [
     '''Idempotency-Key''',
     '''Ed25519PrivateKey''',
     '''curl.*--user''',
     '''curl.*-u''',
+    '''admin:\$\$OPENSEARCH_INITIAL_ADMIN_PASSWORD''',
 ]
