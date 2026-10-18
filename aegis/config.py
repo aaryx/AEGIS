@@ -1,5 +1,6 @@
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import parse_qs, urlparse
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,6 +12,7 @@ class Settings(BaseSettings):
     environment: Literal["development", "testing", "production"] = "development"
     database_url: str = "sqlite:///./aegis.db"
     redis_url: str | None = None
+    redis_ca: str | None = None
     opensearch_url: str | None = None
     opensearch_username: str = "aegis"
     opensearch_password: SecretStr = SecretStr("")
@@ -80,8 +82,35 @@ class Settings(BaseSettings):
         if self.environment == "production":
             if not self.database_url.startswith("postgresql"):
                 raise ValueError("Production requires PostgreSQL")
+            parsed_db = urlparse(self.database_url)
+            db_params = parse_qs(parsed_db.query)
+            sslmode = db_params.get("sslmode", [None])[0]
+            if sslmode not in {"verify-full", "verify-ca"}:
+                raise ValueError(
+                    "Production requires verified PostgreSQL TLS (sslmode=verify-full or sslmode=verify-ca with sslrootcert). "
+                    "sslmode=require alone does not verify certificates or hostnames."
+                )
+            if not db_params.get("sslrootcert", [None])[0]:
+                raise ValueError(
+                    "Production requires PostgreSQL CA certificate path (sslrootcert) for TLS verification"
+                )
+
             if not self.redis_url or not self.opensearch_url:
                 raise ValueError("Production requires Redis and OpenSearch")
+            if not self.redis_url.startswith("rediss://"):
+                raise ValueError("Production requires TLS for Redis (rediss://)")
+            parsed_redis = urlparse(self.redis_url)
+            redis_params = parse_qs(parsed_redis.query)
+            ssl_cert_reqs = redis_params.get("ssl_cert_reqs", [None])[0]
+            if ssl_cert_reqs in {"none", "optional", "0"}:
+                raise ValueError("Production Redis TLS certificate verification must not be disabled")
+            if not parsed_redis.password and not parsed_redis.username:
+                raise ValueError("Production requires authenticated Redis connection")
+
+            if not self.opensearch_url.startswith("https://"):
+                raise ValueError("Production requires HTTPS for OpenSearch")
+            if not self.opensearch_ca:
+                raise ValueError("Production requires CA certificate validation for OpenSearch (opensearch_ca)")
             if len(self.audit_secret.get_secret_value()) < 32:
                 raise ValueError("AUDIT_SECRET must contain at least 32 characters")
             if not self.cookie_secure or not self.public_origin.startswith("https://"):

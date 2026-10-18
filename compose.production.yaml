@@ -1,0 +1,56 @@
+# AEGIS Production Deployment Overlay
+# Usage: docker compose -f compose.yaml -f compose.production.yaml up -d
+name: aegis
+
+x-app-production: &app-production
+  environment:
+    ENVIRONMENT: production
+    COOKIE_SECURE: "true"
+    DATABASE_URL: postgresql+psycopg://aegis_runtime:${POSTGRES_RUNTIME_PASSWORD:-${POSTGRES_PASSWORD}}@postgres:5432/aegis?sslmode=verify-full&sslrootcert=/usr/share/opensearch/config/certs/root-ca.pem
+    REDIS_URL: rediss://:${REDIS_PASSWORD:?Run python scripts/configure.py}@redis:6379/0?ssl_cert_reqs=required
+    OPENSEARCH_URL: https://opensearch:9200
+    OPENSEARCH_CA: /usr/share/opensearch/config/certs/root-ca.pem
+  volumes:
+    - type: bind
+      source: ./certs/opensearch/root-ca.pem
+      target: /usr/share/opensearch/config/certs/root-ca.pem
+      read_only: true
+      bind:
+        create_host_path: false
+
+services:
+  opensearch:
+    environment:
+      plugins.security.ssl.http.enabled: "true"
+      plugins.security.ssl.http.pemcert_filepath: certs/opensearch-node.pem
+      plugins.security.ssl.http.pemkey_filepath: certs/opensearch-node-key.pem
+      plugins.security.ssl.http.pemtrustedcas_filepath: certs/root-ca.pem
+      plugins.security.ssl.transport.enabled: "true"
+      plugins.security.ssl.transport.pemcert_filepath: certs/opensearch-node.pem
+      plugins.security.ssl.transport.pemkey_filepath: certs/opensearch-node-key.pem
+      plugins.security.ssl.transport.pemtrustedcas_filepath: certs/root-ca.pem
+      plugins.security.ssl.transport.enforce_hostname_verification: "true"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+      - ./certs/opensearch:/usr/share/opensearch/config/certs:ro
+    healthcheck:
+      test: [CMD-SHELL, 'curl -fsS --cacert /usr/share/opensearch/config/certs/root-ca.pem --user "admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD" https://localhost:9200/_cluster/health >/dev/null']
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  api:
+    <<: *app-production
+
+  worker:
+    <<: *app-production
+
+  initialize:
+    <<: *app-production
+
+  retention:
+    <<: *app-production
+
+  notifications:
+    <<: *app-production

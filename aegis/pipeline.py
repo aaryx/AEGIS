@@ -42,6 +42,9 @@ def ingest(db, settings, organization_id: str, events: list[EventInput], actor: 
         raise ValueError("Batch exceeds configured event limit")
     if not db.scalar(select(Organization.id).where(Organization.id == organization_id)):
         raise ValueError("Organization not found")
+    from aegis.soar import lock_tenant
+
+    lock_tenant(db, organization_id)
     registry = ParserRegistry()
     normalized = []
     for incoming in events:

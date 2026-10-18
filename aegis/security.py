@@ -142,6 +142,14 @@ def audit(
             .on_conflict_do_nothing()
         )
 
+    # Canonical lock order: 1. Organization -> 2. AuditHead -> 3. Resource rows -> 4. WindowState
+    # Lock Organization row first to maintain strict lock ordering and prevent AB-BA deadlocks
+    org = db.scalar(
+        select(Organization)
+        .where(Organization.id == organization_id)
+        .with_for_update()
+    )
+
     head = db.scalar(
         select(AuditHead)
         .where(AuditHead.organization_id == organization_id)
@@ -193,8 +201,9 @@ def audit(
     head.updated_at = record.created_at
     db.add(record)
 
-    # Sync organization audit_head without requiring row lock
-    org = db.get(Organization, organization_id)
+    # Sync organization audit_head (org was locked at start of audit)
+    if not org:
+        org = db.get(Organization, organization_id)
     if org:
         org.audit_head = record.entry_hash
     db.flush()

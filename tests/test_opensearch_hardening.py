@@ -53,3 +53,77 @@ def test_opensearch_query_builder_enforces_tenant_and_optimizes_wildcards():
     # 8. Aggregation is bounded
     assert body["aggs"]["values"]["terms"]["field"] == "event_category"
     assert body["aggs"]["values"]["terms"]["size"] == 50
+
+
+def test_opensearch_production_enforces_https_and_ca():
+    """Verify that production mode strictly enforces HTTPS and CA validation for OpenSearch."""
+    import pytest
+    from pydantic import ValidationError
+
+    # 1. Plaintext HTTP in production must be rejected
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            environment="production",
+            database_url="postgresql+psycopg://aegis:pass@127.0.0.1:5432/aegis?sslmode=verify-full&sslrootcert=/etc/ssl/certs/ca.pem",
+            redis_url="rediss://:pass@127.0.0.1:6379/0",
+            opensearch_url="http://opensearch:9200",
+            opensearch_ca="/etc/ssl/certs/ca.pem",
+            audit_secret="super-secret-key-at-least-32chars-long-xxx",
+            cookie_secure=True,
+            public_origin="https://aegis.example.com",
+            _env_file=None,
+        )
+    assert "Production requires HTTPS for OpenSearch" in str(exc_info.value)
+
+    # 2. HTTPS without CA certificate in production must be rejected
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(
+            environment="production",
+            database_url="postgresql+psycopg://aegis:pass@127.0.0.1:5432/aegis?sslmode=verify-full&sslrootcert=/etc/ssl/certs/ca.pem",
+            redis_url="rediss://:pass@127.0.0.1:6379/0",
+            opensearch_url="https://opensearch:9200",
+            opensearch_ca=None,
+            audit_secret="super-secret-key-at-least-32chars-long-xxx",
+            cookie_secure=True,
+            public_origin="https://aegis.example.com",
+            _env_file=None,
+        )
+    assert "Production requires CA certificate validation" in str(exc_info.value)
+
+    # 3. HTTPS with CA certificate in production must succeed
+    valid_settings = Settings(
+        environment="production",
+        database_url="postgresql+psycopg://aegis:pass@127.0.0.1:5432/aegis?sslmode=verify-full&sslrootcert=/etc/ssl/certs/ca.pem",
+        redis_url="rediss://:pass@127.0.0.1:6379/0",
+        opensearch_url="https://opensearch:9200",
+        opensearch_ca="/etc/ssl/certs/ca.pem",
+        audit_secret="super-secret-key-at-least-32chars-long-xxx",
+        cookie_secure=True,
+        public_origin="https://aegis.example.com",
+        _env_file=None,
+    )
+    assert valid_settings.opensearch_url == "https://opensearch:9200"
+    assert valid_settings.opensearch_ca == "/etc/ssl/certs/ca.pem"
+
+
+def test_opensearch_client_enforces_certificate_verification(monkeypatch):
+    """Verify OpenSearch client is instantiated with verify_certs=True and proper CA certs."""
+    captured_kwargs = {}
+
+    def mock_opensearch_init(self, hosts=None, **kwargs):
+        captured_kwargs.update(kwargs)
+
+    monkeypatch.setattr("aegis.storage.OpenSearch.__init__", mock_opensearch_init)
+
+    settings = Settings(
+        environment="development",
+        opensearch_url="https://opensearch:9200",
+        opensearch_ca="/path/to/custom_ca.pem",
+        _env_file=None,
+    )
+    storage = OpenSearchStorage(settings)
+    assert storage is not None
+
+    # Certificate verification must NEVER be disabled
+    assert captured_kwargs.get("verify_certs") is True
+    assert captured_kwargs.get("ca_certs") == "/path/to/custom_ca.pem"
