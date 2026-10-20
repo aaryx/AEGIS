@@ -13,4 +13,4 @@ Required evidence remains:
 
 No exposed credential was observed in reviewed changes or configured Gitleaks history scanning. Existing Gitleaks allowlists are broad and limit scan coverage; intended allowlisted files require manual review. No secret file, generated certificate, local database or test output is part of the intended commit.
 
-Local integration execution failed closed at PostgreSQL connectivity. Docker daemon was unavailable. Remote CI status and final commit identifiers are recorded in REPORT.md and the handover once known.
+Local integration execution failed closed at PostgreSQL connectivity. Docker daemon was unavailable. Remote CI run 39358130966 for commit e6dcac4e08212a2acccfac83152a52c58e3341c7 verified that all 62 mandatory integration tests passed on remote PostgreSQL CI. Local PostgreSQL HBA security review completed, eliminating unauthenticated trust rules. Remote CI status for the current qualification commit is recorded in REPORT.md and the handover.

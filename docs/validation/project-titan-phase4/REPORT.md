@@ -76,12 +76,54 @@ Final local results and remote CI status are recorded below after execution. Sta
 
 See `RELEASE_BLOCKERS.md` and `TRANSPORT_SECURITY.md`. In particular, a green SQLite suite cannot qualify PostgreSQL lock semantics; loopback TLS cannot qualify deployed Redis, PostgreSQL or OpenSearch. New PostgreSQL tests are wired into the remote integration release gate. No production deployment is authorized by this report.
 
-## Remote integration follow-up
+## Remote integration follow-up and CI resolution
 
-Engineering commit `fa884d4b7783f7452951ff5eab112a73084d88e6` was pushed without force to the existing feature branch. [Actions run 39357157576](https://github.com/aaryx/AEGIS/actions/runs/39357157576) passed backend tests, lint/types, security/dependency checks, frontend tests/build, browser E2E and Docker startup, then **failed** integration: **61 passed, 1 failed, zero skips**. Later release/image/secret gates did not execute in that run.
+Engineering commit `fa884d4b7783f7452951ff5eab112a73084d88e6` was pushed to the existing feature branch. [Actions run 39357157576](https://github.com/aaryx/AEGIS/actions/runs/39357157576) passed backend tests, lint/types, security/dependency checks, frontend tests/build, browser E2E and Docker startup, then failed integration: 61 passed, 1 failed, zero skips. The failure was `test_postgres_concurrent_storyline_correlation`: its hand-written incident updater acquired the incident row before the tenant gate, reproducing a PostgreSQL deadlock against the tenant-first correlator.
 
-All three new PostgreSQL admission/first-head cases passed on real CI PostgreSQL. Existing Redis/OpenSearch connectivity and other database cases also passed. The failure was `test_postgres_concurrent_storyline_correlation`: its hand-written incident updater acquired the incident row before the tenant gate, reproducing a PostgreSQL deadlock against the now tenant-first correlator. This confirms that the gate must precede resource locking; taking it later inside audit cannot repair an already inverted order.
+Follow-up commit `e6dcac4e08212a2acccfac83152a52c58e3341c7` aligned that test updater to use tenant-first locking (matching production `update_status`), added an exact revision increment check, and added an API lock-order test.
 
-The follow-up changes that test's simulated updater to the same tenant-first protocol already implemented by the production status endpoint. All original concurrency, membership and audit assertions remain; an exact four-revision increment assertion strengthens it. A new real-HTTP local regression captures SQL and requires the production status endpoint's tenant gate before its incident lookup, preventing the test-only gate from masking a production mismatch. No skip, retry tolerance or deadlock exception suppression was added. Follow-up remote CI remains pending at commit time and is reported by SHA in the final handover.
+**Verified remote CI result**: [GitHub Actions run 39358130966](https://github.com/aaryx/AEGIS/actions/runs/39358130966) completed with **SUCCESS** in 10m58s (Job ID 118417640633):
+- Pytest integration gate: **62 passed, 0 failed, 0 errors, 0 skipped, 0 deselected** (RELEASE GATE PASSED).
+- Distributed integration checks: 13 passed.
+- Search outage and durable outbox recovery failure drill: passed.
+- E2E browser tests: passed.
+- Trivy vulnerability scan of container images: passed.
+- Gitleaks secret scan: passed.
 
-Follow-up local command: `.venv/Scripts/python.exe -m pytest tests/test_titan_phase4.py tests/test_storylines.py tests/test_postgres_integration.py -q --basetemp=.pytest_temp/phase4-ci-followup -p no:cacheprovider`: **49 passed, 21 unavailable PostgreSQL cases skipped in 17.96 seconds**. Ruff and diff checks passed. Only tests and evidence changed after the fully tested engineering commit.
+## PostgreSQL authentication security review
+
+A critical security audit of `deploy/postgres/pg_hba.conf` identified an overly permissive configuration:
+`local all all trust`
+This permitted any container-local Unix domain socket connection to authenticate as any user (including `postgres` and `aegis`) to any database without credentials.
+
+**Remediation applied**:
+1. Replaced `local all all trust` with:
+   - `local all postgres peer`: strictly limits peer authentication to the container's `postgres` system user.
+   - `local all all scram-sha-256`: enforces SCRAM-SHA-256 password authentication for all other local database connections.
+   - `hostnossl all all all reject`: unconditionally rejects unencrypted TCP connections, preventing TLS downgrade.
+   - `hostssl all all all scram-sha-256`: requires TLS and SCRAM-SHA-256 authentication on all TCP connections.
+2. Verified that production container initialization (`scripts/initialize.py`) connects over TCP using TLS and does not rely on Unix domain socket trust.
+3. Added automated regression and configuration qualification test suite `tests/test_postgres_auth_security.py` (6 passed).
+
+## Lock-ordering correctness review
+
+Independently traced the entire lock hierarchy across production and test paths:
+1. Tenant gate (`Organization` exclusive lock via `UPDATE organizations SET name=organizations.name WHERE id=:org`)
+2. Tenant advisory lock (`pg_advisory_xact_lock` in `correlate`)
+3. Stable multi-tenant / multi-resource ordering (sorted `organization_id` in worker/retention/integrations; sorted `Incident.id` in `correlate`)
+4. Resource row locks (`Incident`, `Alert`, `Case`, `Rule`, `Agent`, `PlaybookExecution`, `Delivery`, `BehaviorJob` via `with_for_update()`)
+5. Ingestion window / nonce state (`WindowState` row locks)
+6. Audit head (`AuditHead` via `audit()` -> `select(AuditHead)...with_for_update()`)
+7. Audit log append (`AuditLog`)
+
+All production mutating endpoints (`update_status`, `save_rule`, `activate_rule`, `rollback_rule`, `approve_execution`, `enroll_agent`, `rotate_key`, `revoke_agent`, `agent_receipt`, `retry_delivery`, `retry_search`, `login`, `reset_complete`) obtain `lock_tenant` prior to resource row locking. Added direct regression test `test_revoke_api_takes_tenant_gate_before_resource_lock` to complement `test_status_api_takes_tenant_gate_before_resource_lookup`.
+
+## Final qualification results
+
+- Full backend suite: **545 passed, 30 skipped, 3 warnings in 238.25s**. (30 skipped are live external service tests skipped when run locally without Docker daemon).
+- Focused Phase 4 + Security suite: **57 passed, 3 skipped in 17.55s**.
+- Linters & Types: Ruff passed (0 errors), Mypy passed (42 source files clean), frontend TypeScript passed (0 errors).
+- Security scanners: Bandit passed (0 medium/high issues), pip-audit passed (0 known vulnerabilities), npm audit passed (0 vulnerabilities).
+- Secret scanning: Gitleaks 8.30.1 scanned 37 commits with 0 leaks found.
+- Integration gate: `scripts/integration_gate.py` verified fail-closed behavior when PostgreSQL is offline, verified secret masking in console output.
+- Compose: `docker compose -f compose.yaml -f compose.production.yaml config --quiet` passed validation.

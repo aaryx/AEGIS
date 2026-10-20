@@ -38,7 +38,7 @@ API login, reset, enrollment, rule mutations, status updates and search retries 
 
 This reduces known inversions; it is not a proof that every implicit lock, foreign-key check or future caller is deadlock-free. Runtime PostgreSQL lock waits are bounded to five seconds and statements to thirty seconds. Real multi-process adversarial load, timeout recovery and tenant fairness remain pilot prerequisites.
 
-Remote update: run `39357157576` executed and passed all three new PostgreSQL cases (the table above records local availability). Its existing storyline test reproduced a real deadlock in a hand-written incident-first updater. The production endpoint was already tenant-first; the follow-up aligns that test caller with the required contract, adds exact revision accounting, and independently checks the real API's acquisition order. The first run's overall integration outcome was 61 passed / 1 failed / 0 skipped, not a release pass.
+Remote update: run `39357157576` executed and passed all three new PostgreSQL cases, but reproduced a deadlock in a hand-written test updater. Commit `e6dcac4e08212a2acccfac83152a52c58e3341c7` aligned the test updater with the tenant-first contract, added an exact revision check, and added an API lock-order test. [GitHub Actions run 39358130966](https://github.com/aaryx/AEGIS/actions/runs/39358130966) completed with **SUCCESS** in 10m58s: all 62 integration tests passed on live PostgreSQL, Redis, and OpenSearch with zero skips, 13 distributed checks passed, and failure drill passed. Further regression tests verify agent revocation and status API lock ordering directly against production routes.
 
 ## Costs and operational limits
 

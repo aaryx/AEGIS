@@ -191,7 +191,36 @@ def test_status_api_takes_tenant_gate_before_resource_lookup(system):
     assert response.json()["revision"] == revision + 1
 
 
+def test_revoke_api_takes_tenant_gate_before_resource_lock(system):
+    from aegis.agent import EndpointAgent
+
+    client = system["client"]
+    agent = EndpointAgent(name="lock-order-agent", simulation_mode=True)
+    agent.heartbeat(client=client)
+    statements = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement.lower())
+
+    engine = system["app"].state.sessions.kw["bind"]
+    headers = {"Authorization": "Bearer " + system["tokens"]["SUPER_ADMIN"]}
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        response = client.post(
+            f"/api/v1/agents/{agent.name}/revoke",
+            json={"reason": "lock order regression test"},
+            headers=headers,
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert response.status_code == 200
+    gate_index = next(i for i, sql in enumerate(statements) if sql.startswith("update organizations"))
+    resource_index = next(i for i, sql in enumerate(statements) if "from agents" in sql)
+    assert gate_index < resource_index
+
+
 @pytest.mark.parametrize("rollback", [False, True])
+
 def test_admission_waits_for_transaction_outcome(system, monkeypatch, rollback):
     import aegis.soar as soar
 
