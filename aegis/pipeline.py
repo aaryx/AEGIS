@@ -353,6 +353,11 @@ def detect_batch(db, settings, records, redis=None):
     if not records:
         return
     org = records[0].organization_id
+    if any(record.organization_id != org for record in records):
+        raise ValueError("Detection batch must belong to one tenant")
+    from aegis.soar import lock_tenant
+
+    lock_tenant(db, org)
     bind = db.get_bind()
     rules = [
         (row, DetectionRule.model_validate(row.document))

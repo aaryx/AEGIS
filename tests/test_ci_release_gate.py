@@ -1,14 +1,14 @@
 """Negative, boundary, and failure-mode validation for CI release gate (scripts/integration_gate.py).
 
 Validates:
-1. All services healthy and all 16 fixture cases passing -> Gate PASSES (exit 0).
+1. All services healthy and all 20 fixture cases passing -> Gate PASSES (exit 0).
 2. PostgreSQL unavailable -> Gate FAILS (exit 1).
 3. Redis unavailable -> Gate FAILS (exit 1).
 4. OpenSearch unavailable -> Gate FAILS (exit 1).
 5. Missing required configuration (.env absent or credentials missing) -> Gate FAILS (exit 1).
 6. Deliberately failing integration test -> Gate FAILS (exit 1).
 7. Deliberately skipped mandatory test -> Gate FAILS (exit 1).
-8. No tests collected (passed < 16) -> Gate FAILS (exit 1).
+8. No tests collected (passed < 20) -> Gate FAILS (exit 1).
 9. Malformed or unexpected pytest output -> Gate FAILS (exit 1).
 10. Pytest error during execution -> Gate FAILS (exit 1).
 11. Secret preservation: Credentials are NEVER printed to stdout/stderr.
@@ -152,7 +152,7 @@ def test_gate_fails_when_mandatory_test_skipped(mock_env_config, monkeypatch, ca
 
 
 def test_gate_fails_when_no_tests_collected(mock_env_config, monkeypatch, capsys):
-    """Condition: Pytest collects zero tests or fewer than 16 tests."""
+    """Condition: Pytest collects zero tests or fewer than 20 tests."""
     monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
 
     mock_process = MagicMock()
@@ -167,7 +167,7 @@ def test_gate_fails_when_no_tests_collected(mock_env_config, monkeypatch, capsys
 
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
-    assert "RELEASE GATE FAILED: Expected at least 17 integration tests, got 0." in captured.err
+    assert "RELEASE GATE FAILED: Expected at least 20 integration tests, got 0." in captured.err
 
 
 def test_gate_fails_when_pytest_output_malformed(mock_env_config, monkeypatch, capsys):
@@ -226,12 +226,15 @@ ALL_PASSED_STDOUT = (
     "tests/test_postgres_integration.py::test_postgres_concurrent_storyline_correlation PASSED\n"
     "tests/test_integration.py::test_real_dependency_connectivity PASSED\n"
     "tests/test_integration.py::test_real_redis_queue_semantics_and_delivery PASSED\n"
-    "=================== 17 passed in 15.20s ===================\n"
+    "tests/test_phase4_postgres.py::test_postgres_phase4_admission[False] PASSED\n"
+    "tests/test_phase4_postgres.py::test_postgres_phase4_admission[True] PASSED\n"
+    "tests/test_phase4_postgres.py::test_postgres_phase4_first_audit_head_gate PASSED\n"
+    "=================== 20 passed in 15.20s ===================\n"
 )
 
 
-def test_gate_succeeds_when_all_healthy_and_16_pass(mock_env_config, monkeypatch, capsys):
-    """Condition: All services healthy and all 17 fixture cases pass cleanly (Happy Path)."""
+def test_gate_succeeds_when_all_healthy_and_20_pass(mock_env_config, monkeypatch, capsys):
+    """Condition: All services healthy and all 20 fixture cases pass cleanly (Happy Path)."""
     monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
 
     mock_process = MagicMock()
@@ -242,7 +245,7 @@ def test_gate_succeeds_when_all_healthy_and_16_pass(mock_env_config, monkeypatch
         integration_gate.main()
 
     captured = capsys.readouterr()
-    assert "Passed:     17" in captured.out
+    assert "Passed:     20" in captured.out
     assert "Failed:     0" in captured.out
     assert "Skipped:    0" in captured.out
     assert "Deselected: 0" in captured.out
@@ -270,10 +273,10 @@ def test_gate_fails_when_mandatory_test_deselected(mock_env_config, monkeypatch,
 
 
 def test_gate_fails_when_mandatory_test_renamed_or_missing(mock_env_config, monkeypatch, capsys):
-    """Condition: 16 fixture cases pass but a required mandatory test was renamed/omitted and replaced with dummy."""
+    """Condition: 20 fixture cases pass but a required mandatory test was renamed/omitted and replaced with dummy."""
     monkeypatch.setattr(integration_gate, "wait_for_port", lambda host, port, timeout_seconds=15: True)
 
-    # 16 fixture cases pass, but test_real_dependency_connectivity is missing, replaced by test_dummy_extra
+    # 20 fixture cases pass, but test_real_dependency_connectivity is missing, replaced by test_dummy_extra
     tampered_stdout = (
         "tests/test_postgres_integration.py::test_postgres_cerberus_concurrent_evidence_conflict[False] PASSED\n"
         "tests/test_postgres_integration.py::test_postgres_cerberus_concurrent_evidence_conflict[True] PASSED\n"
@@ -292,7 +295,10 @@ def test_gate_fails_when_mandatory_test_renamed_or_missing(mock_env_config, monk
         "tests/test_postgres_integration.py::test_postgres_concurrent_storyline_correlation PASSED\n"
         "tests/test_integration.py::test_real_redis_queue_semantics_and_delivery PASSED\n"
         "tests/test_integration.py::test_dummy_extra PASSED\n"
-        "=================== 17 passed in 15.20s ===================\n"
+        "tests/test_phase4_postgres.py::test_postgres_phase4_admission[False] PASSED\n"
+        "tests/test_phase4_postgres.py::test_postgres_phase4_admission[True] PASSED\n"
+        "tests/test_phase4_postgres.py::test_postgres_phase4_first_audit_head_gate PASSED\n"
+        "=================== 20 passed in 15.20s ===================\n"
     )
 
     mock_process = MagicMock()

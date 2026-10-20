@@ -28,6 +28,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 MANDATORY_INTEGRATION_TESTS = {
+    "test_postgres_phase4_admission[False]",
+    "test_postgres_phase4_admission[True]",
+    "test_postgres_phase4_first_audit_head_gate",
     "test_postgres_cerberus_concurrent_evidence_conflict[False]",
     "test_postgres_cerberus_concurrent_evidence_conflict[True]",
     "test_postgres_concurrent_storyline_correlation",
@@ -149,6 +152,7 @@ def main() -> None:
         "pytest",
         "tests/test_database_safety.py",
         "tests/test_postgres_integration.py",
+        "tests/test_phase4_postgres.py",
         "tests/test_integration.py",
         "-v",
         "--tb=short",

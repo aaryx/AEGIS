@@ -113,7 +113,11 @@ def audit(
     details=None,
     request=None,
 ):
-    # Lock only the tenant's AuditHead row to eliminate organization-wide lock contention
+    # Even ON CONFLICT can wait on an uncommitted first AuditHead insert.
+    # Acquire the tenant gate BEFORE that insert, including pending ORM flushes.
+    from aegis.soar import lock_tenant
+
+    lock_tenant(db, organization_id)
     bind = db.get_bind()
     if bind.dialect.name == "postgresql":
         from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -142,8 +146,7 @@ def audit(
             .on_conflict_do_nothing()
         )
 
-    # Canonical lock order: 1. Organization -> 2. AuditHead -> 3. Resource rows -> 4. WindowState
-    # Lock Organization row first to maintain strict lock ordering and prevent AB-BA deadlocks
+    # The tenant gate remains held through the caller's commit/rollback.
     org = db.scalar(
         select(Organization)
         .where(Organization.id == organization_id)

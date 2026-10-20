@@ -100,7 +100,9 @@ def summarize(alerts, memberships):
 
 def correlate(db, settings, principal, window_seconds):
     org = principal.organization_id
-    # Lock hierarchy: 1. Organization -> 2. AuditHead -> 3. Resource rows -> 4. WindowState
+    from aegis.soar import lock_tenant
+
+    lock_tenant(db, org)
     # Advisory xact lock protects storyline graph computation without row-level lock contention.
     if db.get_bind().dialect.name == "postgresql":
         db.execute(
