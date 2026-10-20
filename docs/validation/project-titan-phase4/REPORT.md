@@ -125,5 +125,15 @@ All production mutating endpoints (`update_status`, `save_rule`, `activate_rule`
 - Linters & Types: Ruff passed (0 errors), Mypy passed (42 source files clean), frontend TypeScript passed (0 errors).
 - Security scanners: Bandit passed (0 medium/high issues), pip-audit passed (0 known vulnerabilities), npm audit passed (0 vulnerabilities).
 - Secret scanning: Gitleaks 8.30.1 scanned 37 commits with 0 leaks found.
-- Integration gate: `scripts/integration_gate.py` verified fail-closed behavior when PostgreSQL is offline, verified secret masking in console output.
 - Compose: `docker compose -f compose.yaml -f compose.production.yaml config --quiet` passed validation.
+
+## Qualification commit and verified remote run
+
+Engineering commit `12d974656ea12c23db44b5214e89b402ac7a188e` was pushed to `feature/ironclad-qualification`.
+**Verified remote CI result**: [GitHub Actions run 39361188088](https://github.com/aaryx/AEGIS/actions/runs/39361188088) completed with **SUCCESS** in 10m12s (Job ID 118427514770):
+- Full verification passed all jobs and steps without failures.
+- Pytest integration gate on remote PostgreSQL: **62 passed, 0 failed, 0 errors, 0 skipped, 0 deselected** (RELEASE GATE PASSED).
+- Distributed integration checks: 13 passed.
+- Search outage and durable outbox recovery failure drill: passed.
+- Image vulnerability and SBOM generation: passed.
+- Remote Gitleaks secret scan: passed.
