@@ -11,7 +11,7 @@
 
 All software-level security controls, tenant isolation barriers, database lock ordering hierarchies, audit hash-chain mechanisms, and disaster-recovery procedures have passed adversarial qualification.
 
-The software codebase is **QUALIFIED FOR AN ISOLATED STAGING PILOT**.
+The software codebase is **QUALIFIED FOR AN ISOLATED STAGING PILOT** on commit `bcbafca8c767d7b3adea0ebe3bae19309c3f00da` (verified in [GitHub Actions Run 39375448702](https://github.com/aaryx/AEGIS/actions/runs/39375448702)).
 
 However, a **CONTROLLED PRODUCTION PILOT** cannot be authorized based solely on unit tests, SQLite simulations, local loopback tests, or CI service containers. Four environmental and infrastructure qualification prerequisites remain outstanding before production traffic can be safely admitted.
 
