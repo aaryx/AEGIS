@@ -38,6 +38,8 @@ API login, reset, enrollment, rule mutations, status updates and search retries 
 
 This reduces known inversions; it is not a proof that every implicit lock, foreign-key check or future caller is deadlock-free. Runtime PostgreSQL lock waits are bounded to five seconds and statements to thirty seconds. Real multi-process adversarial load, timeout recovery and tenant fairness remain pilot prerequisites.
 
+Remote update: run `39357157576` executed and passed all three new PostgreSQL cases (the table above records local availability). Its existing storyline test reproduced a real deadlock in a hand-written incident-first updater. The production endpoint was already tenant-first; the follow-up aligns that test caller with the required contract, adds exact revision accounting, and independently checks the real API's acquisition order. The first run's overall integration outcome was 61 passed / 1 failed / 0 skipped, not a release pass.
+
 ## Costs and operational limits
 
 Serializing tenant writes trades throughput for correctness. Multi-tenant batches can delay unrelated tenants; retention acquires all existing tenant gates and notification delivery still holds transaction locks across bounded network calls. Qualify this contention under production-shaped load before a pilot. No larger timeout was used to hide a deadlock. No automatic replay of externally visible side effects was introduced. Poison-event retries remain bounded by existing settings; infrastructure transaction failures remain pending for later worker iterations.

@@ -162,6 +162,35 @@ def test_audit_first_write_locks_tenant_before_creating_head(system):
     assert first_write.startswith("update organizations")
 
 
+def test_status_api_takes_tenant_gate_before_resource_lookup(system):
+    from aegis.db import Incident
+
+    sessions = system["app"].state.sessions
+    with sessions.begin() as db:
+        incident = Incident(organization_id=system["org"], title="Lock order regression", severity="high")
+        db.add(incident)
+        db.flush()
+        identifier, revision, status = incident.id, incident.revision, incident.status
+    statements = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement.lower())
+
+    engine = sessions.kw["bind"]
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        response = system["client"].patch(
+            f"/api/v1/incidents/{identifier}/status", json={"status": status, "revision": revision}
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert response.status_code == 200
+    gate_index = next(i for i, sql in enumerate(statements) if sql.startswith("update organizations"))
+    resource_index = next(i for i, sql in enumerate(statements) if "from incidents" in sql)
+    assert gate_index < resource_index
+    assert response.json()["revision"] == revision + 1
+
+
 @pytest.mark.parametrize("rollback", [False, True])
 def test_admission_waits_for_transaction_outcome(system, monkeypatch, rollback):
     import aegis.soar as soar

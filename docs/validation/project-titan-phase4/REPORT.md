@@ -75,3 +75,13 @@ Final local results and remote CI status are recorded below after execution. Sta
 ## Remaining qualification
 
 See `RELEASE_BLOCKERS.md` and `TRANSPORT_SECURITY.md`. In particular, a green SQLite suite cannot qualify PostgreSQL lock semantics; loopback TLS cannot qualify deployed Redis, PostgreSQL or OpenSearch. New PostgreSQL tests are wired into the remote integration release gate. No production deployment is authorized by this report.
+
+## Remote integration follow-up
+
+Engineering commit `fa884d4b7783f7452951ff5eab112a73084d88e6` was pushed without force to the existing feature branch. [Actions run 39357157576](https://github.com/aaryx/AEGIS/actions/runs/39357157576) passed backend tests, lint/types, security/dependency checks, frontend tests/build, browser E2E and Docker startup, then **failed** integration: **61 passed, 1 failed, zero skips**. Later release/image/secret gates did not execute in that run.
+
+All three new PostgreSQL admission/first-head cases passed on real CI PostgreSQL. Existing Redis/OpenSearch connectivity and other database cases also passed. The failure was `test_postgres_concurrent_storyline_correlation`: its hand-written incident updater acquired the incident row before the tenant gate, reproducing a PostgreSQL deadlock against the now tenant-first correlator. This confirms that the gate must precede resource locking; taking it later inside audit cannot repair an already inverted order.
+
+The follow-up changes that test's simulated updater to the same tenant-first protocol already implemented by the production status endpoint. All original concurrency, membership and audit assertions remain; an exact four-revision increment assertion strengthens it. A new real-HTTP local regression captures SQL and requires the production status endpoint's tenant gate before its incident lookup, preventing the test-only gate from masking a production mismatch. No skip, retry tolerance or deadlock exception suppression was added. Follow-up remote CI remains pending at commit time and is reported by SHA in the final handover.
+
+Follow-up local command: `.venv/Scripts/python.exe -m pytest tests/test_titan_phase4.py tests/test_storylines.py tests/test_postgres_integration.py -q --basetemp=.pytest_temp/phase4-ci-followup -p no:cacheprovider`: **49 passed, 21 unavailable PostgreSQL cases skipped in 17.96 seconds**. Ruff and diff checks passed. Only tests and evidence changed after the fully tested engineering commit.
