@@ -86,6 +86,29 @@ All 5 tests passed in local Windows development environment and in CI:
 | `test_mismatched_policy_hash_fails_closed` | Tamper Detection | **PASSED** | When observed policy hash does not equal expected policy hash, `receipt_outcome` evaluates to `UNKNOWN`. |
 | `test_replayed_receipt_prevention_logic` | Replay Defense | **PASSED** | Receipt cache rejects duplicate receipt identifiers; revoked agents cannot generate valid receipts. |
 
+### 3.3 Verified Remote CI Execution Artifact (GitHub Actions Run 39389299960)
+
+The drill executed end-to-end on GitHub Actions Ubuntu Runner (`Linux 6.17.0-1022-azure`, Job ID `118516668408`):
+
+```json
+{
+  "status": "VERIFIED_KERNEL_ENFORCEMENT",
+  "table": "aegis_9362a57e48a2753bda919023",
+  "controller": "192.0.2.1:8443",
+  "enforce_policy_sha256": "34869c695e25b19ae5ecf69b8756fa9bb2ca524109409f48dcf909089b449244",
+  "receipt_enforced": "ENFORCED",
+  "receipt_released": "RELEASED",
+  "ed25519_verification": "VALID",
+  "tamper_detection": "FAIL_CLOSED_UNKNOWN",
+  "cleanup_verified": true
+}
+```
+
+- **Workflow Run Link**: [https://github.com/aaryx/AEGIS/actions/runs/39389299960](https://github.com/aaryx/AEGIS/actions/runs/39389299960)
+- **Kernel Enforced Table**: `aegis_9362a57e48a2753bda919023`
+- **Verified Policy SHA-256**: `34869c695e25b19ae5ecf69b8756fa9bb2ca524109409f48dcf909089b449244`
+- **Table Deletion & Host Cleanup**: Confirmed via `post_release_snap is None` and netns teardown trap.
+
 ---
 
 ## 4. Remediation & Rollback Architecture

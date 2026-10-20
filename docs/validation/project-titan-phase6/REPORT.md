@@ -6,6 +6,8 @@
 **Branch**: `feature/ironclad-qualification`  
 **Phase 5 Baseline Commit**: `212c4b3706497f53f31f9cff0e9095bb742c3886`  
 **Phase 5 Engineering Commit**: `bcbafca8c767d7b3adea0ebe3bae19309c3f00da`  
+**Phase 6 Final Engineering Commit**: `5dba7a08b5f3eb65c192667104ae05d53c3938e3`  
+**Phase 6 Verified Remote CI Run**: [https://github.com/aaryx/AEGIS/actions/runs/39389299960](https://github.com/aaryx/AEGIS/actions/runs/39389299960) (Job 118516668408)  
 **Phase 6 Final Release Decision**: **CONDITIONALLY QUALIFIED FOR AN ISOLATED STAGING PILOT**  
 **Document Ref**: `docs/validation/project-titan-phase6/REPORT.md`  
 
@@ -53,6 +55,11 @@ All four production blockers were systematically addressed through production-gr
 - **Severity**: MEDIUM (Concurrency / Load Ingestion)
 - **Root Cause**: Passing `dict` or `list` metadata objects in synthetic events caused `InterfaceError: Error binding parameter: supported types are bytes, int, float, str and None` when SQLite is used as local engine. Furthermore, concurrent worker writes could trigger `OperationalError: database is locked`.
 - **Remediation**: In `aegis/db.py`, registered SQLite adapters `sqlite3.register_adapter(dict, json.dumps)` and `list`, and set `connect_args={"timeout": 15}` to guarantee robust concurrent transaction handling.
+
+### 3.4 Defect 4: Linux Kernel `nftables` Netlink Readback Grouping Alignment
+- **Severity**: HIGH (Live Endpoint Containment Enforcement)
+- **Root Cause**: Modern Linux kernel (`Linux 6.17/6.8`, `nftables v1.0.9+`) returns decompiled netlink tables with all base chains declared prior to rules (`table` -> `chain input` -> `chain output` -> `chain forward` -> rules). `LinuxContainment._objects()` intermingled rules immediately beneath each chain, causing strict byte-for-byte readback verification to detect an object sequence mismatch.
+- **Remediation**: Updated `_objects()` in `aegis/endpoint_firewall.py` to declare all chains before rule objects, achieving exact alignment with kernel netlink readback and enabling automated verification in CI.
 
 ---
 
