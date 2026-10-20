@@ -61,6 +61,11 @@ All four production blockers were systematically addressed through production-gr
 - **Root Cause**: Modern Linux kernel (`Linux 6.17/6.8`, `nftables v1.0.9+`) returns decompiled netlink tables with all base chains declared prior to rules (`table` -> `chain input` -> `chain output` -> `chain forward` -> rules). `LinuxContainment._objects()` intermingled rules immediately beneath each chain, causing strict byte-for-byte readback verification to detect an object sequence mismatch.
 - **Remediation**: Updated `_objects()` in `aegis/endpoint_firewall.py` to declare all chains before rule objects, achieving exact alignment with kernel netlink readback and enabling automated verification in CI.
 
+### 3.5 Finding 5: Reconciled Historical Soak Test Rate Telemetry Discrepancy
+- **Severity**: MEDIUM (Reporting & Telemetry Accuracy)
+- **Root Cause**: The previous report recorded an execution command of `--rate 100` alongside 392 processed events in 10.9s (35.96 EPS). An independent audit of `local-data/soak_results.json` revealed that this historical run was configured with `target_rate_eps: 40.0` (`392 / 10.9 = 35.96 EPS`). The documentation erroneously noted `--rate 100` while copying the `--rate 40` telemetry.
+- **Remediation**: Executed clean 100-rate runs (`--workers 4 --duration 15 --rate 100`). Demonstrated 1,380 events processed in 15.94s (86.59 EPS) with 0 errors, 0 loss, active processing across all 4 worker processes, and 100% verified HMAC audit chains across all tenants.
+
 ---
 
 ## 4. Test Suite Execution & Verification Record
@@ -69,12 +74,12 @@ All test suites and verification gates were executed and passed with 100% succes
 
 | Test / Gate Description | Command | Exit Code | Results |
 |---|---|:---:|---|
-| **Phase 6 Transport & TLS Rotation** | `pytest tests/test_phase6_tls_and_rotation.py -v` | `0` | **8 passed** in 2.22s |
+| **Phase 6 Transport & TLS Rotation** | `pytest tests/test_phase6_tls_and_rotation.py -v` | `0` | **8 passed** in 0.73s |
 | **Phase 6 Containment Unit Logic** | `pytest tests/test_phase6_containment_logic.py -v` | `0` | **5 passed** in 0.15s |
 | **Phase 6 Multi-Worker Soak Harness** | `pytest tests/test_phase6_soak_harness.py -v` | `0` | **1 passed** in 1.94s |
-| **Phase 6 Backup & Cold Restore** | `pytest tests/test_phase6_cloud_backup_and_recovery.py -v` | `0` | **6 passed** in 0.81s |
-| **Multi-Worker Smoke Execution** | `python scripts/soak_test.py --workers 4 --duration 10 --rate 100` | `0` | **392 events processed**, 0 loss, 0 errors, 100% audit verified |
-| **Phase 5 Dedicated Regression Suite** | `pytest tests/test_phase5_*.py -q` | `0` | **42 passed** in 7.02s |
+| **Phase 6 Backup & Cold Restore** | `pytest tests/test_phase6_cloud_backup_and_recovery.py -v` | `0` | **6 passed** in 0.82s |
+| **Multi-Worker Soak Execution (100 EPS)** | `python scripts/soak_test.py --workers 4 --duration 15 --rate 100` | `0` | **1,380 events processed**, 86.59 EPS, 0 loss, 0 errors, 4 workers active, 100% audit verified |
+| **Phase 5 Dedicated Regression Suite** | `pytest tests/test_phase5_*.py -q` | `0` | **42 passed** in 23.72s |
 | **Frontend Test Suite** | `npm test` | `0` | **35 passed** (100% green) |
 | **Frontend TypeScript Typecheck** | `npm run typecheck` | `0` | **0 errors** |
 | **Frontend Production Build** | `npm run build` | `0` | **Success** (dist bundle generated) |
