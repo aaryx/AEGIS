@@ -46,8 +46,7 @@ class LinuxContainment:
         for hook in ("input", "output", "forward"):
             objects.append({"chain": {**base, "name": hook, "type": "filter", "hook": hook,
                                       "prio": -10, "policy": "drop"}})
-            if hook == "forward":
-                continue
+        for hook in ("input", "output"):
             interface = "iifname" if hook == "input" else "oifname"
             objects.append({"rule": {**base, "chain": hook, "expr": [
                 {"match": {"op": "==", "left": {"meta": {"key": interface}}, "right": "lo"}},
