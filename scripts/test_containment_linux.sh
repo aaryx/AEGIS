@@ -110,7 +110,15 @@ print("[+] Initial snapshot is clean: None")
 
 # 2. Apply Isolation
 print("[*] Applying host isolation (isolate=True)...")
-result_enforce = containment.apply(isolate=True)
+try:
+    result_enforce = containment.apply(isolate=True)
+except Exception as e:
+    import traceback, subprocess
+    print("[-] Exception during containment.apply(True):", repr(e))
+    traceback.print_exc()
+    raw = subprocess.run(["/usr/sbin/nft", "-j", "list", "table", "inet", containment.table], capture_output=True, text=True)
+    print("[-] Raw nft table output:", raw.stdout, raw.stderr)
+    raise
 assert result_enforce["mode"] == "live"
 assert result_enforce["outcome"] == "ENFORCED"
 evidence = result_enforce["evidence"]

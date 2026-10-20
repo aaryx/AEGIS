@@ -16,10 +16,10 @@ from typing import Any
 
 
 class ContainmentError(RuntimeError):
-    def __init__(self, error_type, commands):
-        super().__init__(error_type)
+    def __init__(self, error_type, commands, message: str = ""):
+        super().__init__(f"{error_type}: {message}" if message else error_type)
         self.evidence = {"backend": "nftables-v1", "verified": False, "state": "UNKNOWN",
-                         "error_type": error_type, "attempted_commands": commands}
+                         "error_type": error_type, "attempted_commands": commands, "error_message": message}
 
 
 class LinuxContainment:
@@ -74,7 +74,7 @@ class LinuxContainment:
             try:
                 info = os.fstat(fd)
                 if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
-                    raise RuntimeError("Unsafe containment lock file")
+                    raise RuntimeError(f"Unsafe containment lock file: uid={info.st_uid} euid={os.geteuid()} mode={oct(info.st_mode)}")
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 yield
             finally:
@@ -100,7 +100,7 @@ class LinuxContainment:
         objects = [{kind: {k: v for k, v in value.items() if k != "handle"}}
                    for item in entries for kind, value in item.items() if kind != "metainfo"]
         if objects != self.objects:
-            raise RuntimeError("Existing policy differs; refusing to modify or remove it")
+            raise RuntimeError(f"Existing policy differs; refusing to modify or remove it. Objects={json.dumps(objects)} Expected={json.dumps(self.objects)}")
         return objects
 
     def apply(self, isolate: bool):
@@ -108,7 +108,7 @@ class LinuxContainment:
         try:
             return self._apply(isolate, commands)
         except Exception as exc:
-            raise ContainmentError(type(exc).__name__, commands) from None
+            raise ContainmentError(type(exc).__name__, commands, str(exc)) from exc
 
     def _apply(self, isolate: bool, commands):
         with self.locked():
@@ -122,7 +122,7 @@ class LinuxContainment:
                 self.run(["-j", "-f", "-"], {"nftables": commands})
             observed = self.snapshot()
             if (observed is not None) != isolate:
-                raise RuntimeError("Policy readback did not confirm requested state")
+                raise RuntimeError(f"Policy readback did not confirm requested state (observed is None: {observed is None}, isolate: {isolate})")
             outcome = "ENFORCED" if isolate else "RELEASED"
             proof = self._hash(observed) if isolate else self._hash([])
             return {
