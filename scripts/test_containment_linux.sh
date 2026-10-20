@@ -71,7 +71,20 @@ sudo ip netns exec "${NS_NAME}" ip route add default via "${HOST_IP}"
 echo "[*] Network namespace network configuration verified:"
 sudo ip netns exec "${NS_NAME}" ip addr show
 
-PYTHON_BIN="$(which python || which python3)"
+if [ -z "${PYTHON_BIN:-}" ]; then
+    if [ -n "${VIRTUAL_ENV:-}" ] && [ -x "${VIRTUAL_ENV}/bin/python" ]; then
+        PYTHON_BIN="${VIRTUAL_ENV}/bin/python"
+    elif [ -n "${pythonLocation:-}" ] && [ -x "${pythonLocation}/bin/python" ]; then
+        PYTHON_BIN="${pythonLocation}/bin/python"
+    elif command -v python >/dev/null 2>&1; then
+        PYTHON_BIN="$(command -v python)"
+    elif command -v python3 >/dev/null 2>&1; then
+        PYTHON_BIN="$(command -v python3)"
+    else
+        PYTHON_BIN="/usr/bin/python3"
+    fi
+fi
+
 echo "[*] Using Python: ${PYTHON_BIN}"
 echo "[*] Executing Python LinuxContainment qualification inside ${NS_NAME}..."
 
