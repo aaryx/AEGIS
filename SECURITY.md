@@ -53,9 +53,9 @@ Our coordinated disclosure process follows these milestones:
 
 | Milestone | Target Response Time | Action |
 | :--- | :--- | :--- |
-| **Initial Acknowledgment** | $\le$ 48 hours | Confirm receipt of report and assign a tracking identifier. |
-| **Triage & Reproduction** | $\le$ 5 business days | Verify exploitability, assess severity via CVSS v3.1, and scope affected modules. |
-| **Remediation & Fix** | $\le$ 14 business days | Author, peer-review, and validate fixes in an isolated security worktree with regression tests. |
+| **Initial Acknowledgment** | Within 48 hours | Confirm receipt of report and assign a tracking identifier. |
+| **Triage & Reproduction** | Within 5 business days | Verify exploitability, assess severity via CVSS v3.1, and scope affected modules. |
+| **Remediation & Fix** | Within 14 business days | Author, peer-review, and validate fixes in an isolated security worktree with regression tests. |
 | **Public Disclosure** | Coordinated | Publish release advisory and patch release simultaneously following validation. |
 
 ---

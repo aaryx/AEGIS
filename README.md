@@ -1,6 +1,6 @@
-# AEGIS — Security Intelligence & Operations Platform
+# AEGIS - Security Intelligence & Operations Platform
 
-[![CI Verification](https://github.com/aaryx/AEGIS/actions/workflows/ci.yml/badge.svg?branch=feature/ironclad-qualification)](https://github.com/aaryx/AEGIS/actions/runs/40077731185)
+[![CI Verification](https://github.com/aaryx/AEGIS/actions/workflows/ci.yml/badge.svg?branch=feature/ironclad-qualification)](https://github.com/aaryx/AEGIS/actions/runs/40081421870)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB.svg?logo=python&logoColor=white)](pyproject.toml)
 [![FastAPI: 0.135](https://img.shields.io/badge/Backend-FastAPI%200.135-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
@@ -22,7 +22,7 @@
 | Verification Gate | Result | Qualification Status |
 | :--- | :---: | :--- |
 | **Codebase Qualification** | **PASSED** | **CODE QUALIFIED** across 622 unit/regression tests and 62 live integration tests |
-| **Remote GitHub Actions CI** | **PASSED** | **[Run 40077731185](https://github.com/aaryx/AEGIS/actions/runs/40077731185)** — All 38 pipeline steps succeeded |
+| **Remote GitHub Actions CI** | **PASSED** | **[Run 40081421870](https://github.com/aaryx/AEGIS/actions/runs/40081421870)** — All 38 pipeline steps succeeded |
 | **Dependency Security (CVEs)** | **PASSED** | 0 vulnerabilities across Python (`requirements.lock`) and Node.js (`package-lock.json`) |
 | **Secret Scan Audit** | **PASSED** | 0 secrets in current working tree and reachable Git history |
 | **Production Readiness Gate** | **BLOCKED** | **Blocked on 4 documented external operational prerequisites** (see below) |
