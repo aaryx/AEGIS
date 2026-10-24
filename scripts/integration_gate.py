@@ -169,7 +169,8 @@ def main() -> None:
     )
 
     output_lines: list[str] = []
-    assert process.stdout is not None
+    if process.stdout is None:
+        raise RuntimeError("Subprocess stdout stream is not available")
     for line in iter(process.stdout.readline, ""):
         sanitized_line = line
         if postgres_pass:

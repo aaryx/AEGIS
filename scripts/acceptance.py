@@ -145,7 +145,7 @@ def main():
                     "result": "PASS",
                     "smoke_checks": {
                         "unauth_rejection": "PASS",
-                        "invalid_token_rejection": "PASS",
+                        "invalid_token_rejection": "PASS",  # nosec: B105 # smoke test verification status indicator
                         "tenant_isolation": "PASS",
                         "system_readiness": "PASS",
                         "detection_rules": len(rules_list),

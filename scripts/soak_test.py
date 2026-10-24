@@ -19,6 +19,7 @@ import multiprocessing as mp
 import os
 import queue
 import random
+import secrets
 import statistics
 import sys
 import time
@@ -58,7 +59,7 @@ def get_process_rss_mb(pid: int | None = None) -> float | None:
         val = proc.memory_info().rss / (1024.0 * 1024.0)
         if val > 0.0:
             return val
-    except Exception:  # noqa: S110
+    except Exception:  # noqa: S110 # nosec: B110 # fallback on unavailable memory telemetry
         pass
 
     # 2. Linux / POSIX platform handling
@@ -76,7 +77,7 @@ def get_process_rss_mb(pid: int | None = None) -> float | None:
                                 val = kb / 1024.0
                                 if val > 0.0:
                                     return val
-            except Exception:  # noqa: S110
+            except Exception:  # noqa: S110 # nosec: B110
                 pass
             return None
 
@@ -87,7 +88,7 @@ def get_process_rss_mb(pid: int | None = None) -> float | None:
             val = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / scale
             if val > 0.0:
                 return val
-        except Exception:  # noqa: S110
+        except Exception:  # noqa: S110 # nosec: B110
             pass
         return None
 
@@ -147,7 +148,7 @@ def get_process_rss_mb(pid: int | None = None) -> float | None:
                             return val
                 finally:
                     close_handle(handle)
-    except Exception:  # noqa: S110
+    except Exception:  # noqa: S110 # nosec: B110 # fallback on unavailable memory telemetry
         pass
     return None
 
@@ -196,7 +197,7 @@ def worker_process_loop(
 
 def generate_synthetic_event(org_id: str, idx: int) -> dict:
     """Generates a valid, well-structured synthetic SIEM event."""
-    ts = (datetime.now(UTC) - timedelta(seconds=random.randint(1, 60))).isoformat()  # noqa: S311
+    ts = (datetime.now(UTC) - timedelta(seconds=secrets.SystemRandom().randint(1, 60))).isoformat()
     event_types = ["auth_login", "process_creation", "network_connection", "file_modification"]
     ev_type = event_types[idx % len(event_types)]
     users = ["admin", "alice", "bob", "service_account_01", "operator"]
@@ -270,7 +271,7 @@ def run_soak_test(
     settings = Settings(
         environment="testing",
         database_url=effective_db_url,
-        audit_secret="soak-test-audit-secret-key-32chars-min",  # noqa: S106
+        audit_secret="soak-test-audit-secret-key-32chars-min",  # noqa: S106 # nosec: B106 # local synthetic soak test key
         _env_file=None,
     )
 
