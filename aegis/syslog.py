@@ -201,7 +201,8 @@ class SyslogServer:
                 delay = min(delay * 2, 1.0)
 
     def _run_udp(self) -> None:
-        assert self._socket is not None
+        if self._socket is None:
+            raise RuntimeError("Syslog receiver socket is not initialized")
         self._socket.settimeout(1.0)
         batch: list[EventInput] = []
         while self.running:
@@ -227,7 +228,8 @@ class SyslogServer:
                 logger.debug("Final batch flush error: %s", exc)
 
     def _run_tcp(self) -> None:
-        assert self._socket is not None
+        if self._socket is None:
+            raise RuntimeError("Syslog receiver socket is not initialized")
         self._socket.settimeout(1.0)
         while self.running:
             try:

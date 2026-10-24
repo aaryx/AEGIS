@@ -17,6 +17,7 @@ import argparse
 import json
 import multiprocessing as mp
 import os
+import queue
 import random
 import statistics
 import sys
@@ -42,16 +43,55 @@ from aegis.worker import process_once
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def get_process_rss_mb(pid: int | None = None) -> float:
-    """Returns the current Resident Set Size (RSS) in MB for the process."""
+def get_process_rss_mb(pid: int | None = None) -> float | None:
+    """Returns the Resident Set Size (RSS) in MB for the process, or None if unavailable.
+
+    Guarantees: If a specific non-current PID is requested, it queries that specific PID
+    and NEVER falls back to returning the current process's memory.
+    """
+    is_current = (pid is None or pid == os.getpid())
+
+    # 1. psutil implementation (works cross-platform when installed)
+    try:
+        import psutil
+        proc = psutil.Process(pid) if pid else psutil.Process()
+        val = proc.memory_info().rss / (1024.0 * 1024.0)
+        if val > 0.0:
+            return val
+    except Exception:  # noqa: S110
+        pass
+
+    # 2. Linux / POSIX platform handling
     if sys.platform != "win32":
+        if not is_current:
+            # Query target PID via /proc/{pid}/status on Linux; never return current process
+            try:
+                status_path = Path(f"/proc/{pid}/status")
+                if status_path.exists():
+                    for line in status_path.read_text(encoding="utf-8").splitlines():
+                        if line.startswith("VmRSS:"):
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                kb = float(parts[1])
+                                val = kb / 1024.0
+                                if val > 0.0:
+                                    return val
+            except Exception:  # noqa: S110
+                pass
+            return None
+
+        # Current process on POSIX via getrusage
         try:
             import resource
-            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
-        except Exception:
-            return 0.0
+            scale = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
+            val = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / scale
+            if val > 0.0:
+                return val
+        except Exception:  # noqa: S110
+            pass
+        return None
 
-    # Windows memory query via ctypes
+    # 3. Windows platform handling via ctypes
     try:
         import ctypes
         from ctypes import wintypes
@@ -72,12 +112,44 @@ def get_process_rss_mb(pid: int | None = None) -> float:
 
         counters = PROCESS_MEMORY_COUNTERS()
         counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
-        handle = ctypes.windll.kernel32.GetCurrentProcess()
-        if ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
-            return counters.WorkingSetSize / (1024.0 * 1024.0)
+        get_process_memory_info = ctypes.windll.psapi.GetProcessMemoryInfo
+        get_process_memory_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESS_MEMORY_COUNTERS), wintypes.DWORD]
+        get_process_memory_info.restype = wintypes.BOOL
+
+        if is_current:
+            get_current_process = ctypes.windll.kernel32.GetCurrentProcess
+            get_current_process.restype = wintypes.HANDLE
+            handle = get_current_process()
+            if get_process_memory_info(handle, ctypes.byref(counters), counters.cb):
+                val = counters.WorkingSetSize / (1024.0 * 1024.0)
+                if val > 0.0:
+                    return val
+        else:
+            # Query specific target PID; never return current process
+            PROCESS_QUERY_INFORMATION = 0x0400
+            PROCESS_VM_READ = 0x0010
+            open_process = ctypes.windll.kernel32.OpenProcess
+            open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            open_process.restype = wintypes.HANDLE
+            close_handle = ctypes.windll.kernel32.CloseHandle
+            close_handle.argtypes = [wintypes.HANDLE]
+            close_handle.restype = wintypes.BOOL
+
+            handle = open_process(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, pid)
+            if not handle:
+                # Fallback to limited query rights
+                handle = open_process(0x1000 | PROCESS_VM_READ, False, pid)
+            if handle:
+                try:
+                    if get_process_memory_info(handle, ctypes.byref(counters), counters.cb):
+                        val = counters.WorkingSetSize / (1024.0 * 1024.0)
+                        if val > 0.0:
+                            return val
+                finally:
+                    close_handle(handle)
     except Exception:  # noqa: S110
         pass
-    return 0.0
+    return None
 
 
 def worker_process_loop(
@@ -147,6 +219,28 @@ def generate_synthetic_event(org_id: str, idx: int) -> dict:
     }
 
 
+def drain_pending_events(
+    sessions,
+    timeout: float = 5.0,
+    poll_interval: float = 0.2,
+) -> int:
+    """Waits up to `timeout` seconds for pending and retry events in the database to reach 0.
+
+    Returns the count of remaining pending/retry events (0 on successful drain).
+    """
+    deadline = time.monotonic() + timeout
+    remaining = 0
+    while True:
+        with sessions() as db:
+            remaining = db.scalar(
+                select(func.count(EventRecord.id)).where(EventRecord.state.in_(["PENDING", "RETRY"]))
+            ) or 0
+        if remaining == 0 or time.monotonic() >= deadline:
+            break
+        time.sleep(poll_interval)
+    return remaining
+
+
 def run_soak_test(
     workers: int = 4,
     duration: float = 30.0,
@@ -156,13 +250,15 @@ def run_soak_test(
     db_url: str | None = None,
     output_path: Path | None = None,
     checkpoint_interval: float = 5.0,
+    checkpoint_file: Path | None = None,
+    require_telemetry: bool = True,
 ) -> dict:
     """Executes the multi-worker soak test harness and returns metrics."""
     random.seed(seed)
     destination = ROOT / "local-data"
     destination.mkdir(exist_ok=True)
     out_file = output_path or (destination / "soak_results.json")
-    checkpoint_file = destination / "soak_checkpoints.json"
+    chk_file = checkpoint_file or (destination / "soak_checkpoints.json")
 
     effective_db_url = (
         db_url
@@ -243,26 +339,28 @@ def run_soak_test(
     batch_size = max(1, min(50, int(rate / 5)))  # ~5 batches per second
     interval = batch_size / rate
     event_counter = 0
+    batch_index = 0
 
     try:
         while (elapsed := time.monotonic() - start_time) < duration:
-            # Drain stats queue
-            while not stats_queue.empty():
+            # Drain stats queue without relying on Queue.empty()
+            while True:
                 try:
                     item = stats_queue.get_nowait()
-                    if item["type"] == "worker_processed":
-                        worker_processed_counts[item["worker_id"]] = (
-                            worker_processed_counts.get(item["worker_id"], 0) + item["count"]
-                        )
-                    elif item["type"] == "worker_error":
-                        worker_error_counts[item["worker_id"]] = (
-                            worker_error_counts.get(item["worker_id"], 0) + 1
-                        )
-                except Exception:
+                except (queue.Empty, Exception):
                     break
+                if item.get("type") == "worker_processed":
+                    worker_processed_counts[item["worker_id"]] = (
+                        worker_processed_counts.get(item["worker_id"], 0) + item["count"]
+                    )
+                elif item.get("type") == "worker_error":
+                    worker_error_counts[item["worker_id"]] = (
+                        worker_error_counts.get(item["worker_id"], 0) + 1
+                    )
 
-            # Ingest Batch
-            target_org = tenant_ids[event_counter % len(tenant_ids)]
+            # Ingest Batch (cycle tenants by batch index to prevent modulo stride lock)
+            target_org = tenant_ids[batch_index % len(tenant_ids)]
+            batch_index += 1
             target_user = user_ids[target_org]
             raw_batch = [
                 EventInput(
@@ -295,6 +393,8 @@ def run_soak_test(
                     ) or 0
 
                 rss_mb = get_process_rss_mb()
+                rss_rounded = round(rss_mb, 2) if rss_mb is not None else None
+                rss_str = f"{rss_mb:.1f} MB" if rss_mb is not None else "UNAVAILABLE"
                 current_eps = total_db_processed / max(0.1, elapsed)
                 cp = {
                     "timestamp": datetime.now(UTC).isoformat(),
@@ -304,12 +404,12 @@ def run_soak_test(
                     "total_processed": total_db_processed,
                     "queue_depth": queue_depth,
                     "eps": round(current_eps, 2),
-                    "memory_rss_mb": round(rss_mb, 2),
+                    "memory_rss_mb": rss_rounded,
                 }
                 checkpoints.append(cp)
-                checkpoint_file.write_text(json.dumps(checkpoints, indent=2), encoding="utf-8")
+                chk_file.write_text(json.dumps(checkpoints, indent=2), encoding="utf-8")
                 last_checkpoint_time = time.monotonic()
-                print(f"[{elapsed:6.1f}s] Ingested: {total_submitted} | Processed: {total_db_processed} | Queue: {queue_depth} | Rate: {current_eps:.1f} EPS | RSS: {rss_mb:.1f} MB")
+                print(f"[{elapsed:6.1f}s] Ingested: {total_submitted} | Processed: {total_db_processed} | Queue: {queue_depth} | Rate: {current_eps:.1f} EPS | RSS: {rss_str}")
 
             # Throttle to match target rate
             loop_duration = time.monotonic() - t0
@@ -318,33 +418,70 @@ def run_soak_test(
                 time.sleep(sleep_needed)
 
     finally:
+        # 1. Allow active workers to drain in-flight admitted events
+        drain_pending_events(sessions, timeout=5.0, poll_interval=0.2)
+
+        # 2. Signal stop and join all worker processes with leak detection
         print("[*] Signal stopping all worker processes...")
         stop_event.set()
-        for p in worker_processes:
-            p.join(timeout=5.0)
+        worker_join_timeouts: list[str] = []
+        worker_leak_detected: list[str] = []
+        worker_unclean_exits: list[dict] = []
+        cleanup_exceptions: list[str] = []
 
-    # Allow final drain period for in-flight work
-    drain_start = time.monotonic()
-    while time.monotonic() - drain_start < 5.0:
-        with sessions() as db:
-            pending = db.scalar(
-                select(func.count(EventRecord.id)).where(EventRecord.state.in_(["PENDING", "RETRY"]))
-            ) or 0
-        if pending == 0:
-            break
-        time.sleep(0.5)
+        for p in worker_processes:
+            try:
+                p.join(timeout=5.0)
+                if p.is_alive():
+                    worker_join_timeouts.append(p.name)
+                    try:
+                        p.terminate()
+                        p.join(timeout=2.0)
+                    except Exception as term_exc:
+                        cleanup_exceptions.append(f"{p.name} terminate error: {term_exc}")
+                    if p.is_alive():
+                        worker_leak_detected.append(p.name)
+                if not p.is_alive():
+                    if p.name not in worker_join_timeouts and p.exitcode not in (0, None):
+                        worker_unclean_exits.append({"worker": p.name, "exitcode": p.exitcode})
+            except Exception as join_exc:
+                cleanup_exceptions.append(f"{p.name} join error: {join_exc}")
+
+        # 3. Drain remaining items from stats queue safely without relying on empty()
+        while True:
+            try:
+                item = stats_queue.get_nowait()
+            except (queue.Empty, Exception):
+                break
+            if item.get("type") == "worker_processed":
+                worker_processed_counts[item["worker_id"]] = (
+                    worker_processed_counts.get(item["worker_id"], 0) + item["count"]
+                )
+            elif item.get("type") == "worker_error":
+                worker_error_counts[item["worker_id"]] = (
+                    worker_error_counts.get(item["worker_id"], 0) + 1
+                )
 
     # 4. Final Accounting & Reconciliations
     total_time = time.monotonic() - start_time
     with sessions() as db:
         final_processed = db.scalar(select(func.count(EventRecord.id)).where(EventRecord.state == "PROCESSED")) or 0
-        final_pending = db.scalar(select(func.count(EventRecord.id)).where(EventRecord.state.in_(["PENDING", "RETRY"]))) or 0
+        final_pending = db.scalar(select(func.count(EventRecord.id)).where(EventRecord.state == "PENDING")) or 0
+        final_retry = db.scalar(select(func.count(EventRecord.id)).where(EventRecord.state == "RETRY")) or 0
         final_dead = db.scalar(select(func.count(EventRecord.id)).where(EventRecord.state == "DEAD")) or 0
+        final_in_flight = final_pending + final_retry
 
         # Cross-Tenant Contamination Assertion
         rogue_events = db.scalar(
             select(func.count(EventRecord.id)).where(EventRecord.organization_id.not_in(tenant_ids))
         ) or 0
+
+        # Per-tenant event distribution to prevent vacuous isolation passes
+        tenant_event_counts: dict[str, int] = {}
+        for org_id in tenant_ids:
+            tenant_event_counts[org_id] = db.scalar(
+                select(func.count(EventRecord.id)).where(EventRecord.organization_id == org_id)
+            ) or 0
 
         # Cryptographic HMAC Audit-Chain Verification across all test tenants
         audit_verifications: dict[str, bool] = {}
@@ -360,11 +497,56 @@ def run_soak_test(
         p50 = p95 = p99 = 0.0
 
     overall_eps = final_processed / max(0.001, total_time)
-    all_audit_valid = all(audit_verifications.values())
-    reconciliation_ok = (total_accepted == final_processed + final_pending + final_dead)
+
+    # Non-vacuous audit verification check (requires non-empty tenants and 100% verification)
+    all_audit_valid = (
+        len(tenant_ids) > 0
+        and len(audit_verifications) == len(tenant_ids)
+        and all(audit_verifications.values())
+    )
+
+    # Non-vacuous tenant isolation check
+    tenants_populated = sum(1 for c in tenant_event_counts.values() if c > 0)
+    isolation_verified = (tenants_populated >= 2) if (tenant_count >= 2 and final_processed >= 2) else True
+
+    # Strict multi-layer event accounting
+    reconciliation_ok = (total_accepted == final_processed + final_in_flight + final_dead)
+    submission_accounting_ok = (total_submitted == total_accepted + total_duplicates + total_rejected)
+    reconciliation_passed = reconciliation_ok and submission_accounting_ok
+    drain_succeeded = (final_in_flight == 0)
+    workers_clean = (
+        len(worker_join_timeouts) == 0
+        and len(worker_leak_detected) == 0
+        and len(worker_unclean_exits) == 0
+        and len(cleanup_exceptions) == 0
+    )
+
+    valid_rss_readings = [
+        cp["memory_rss_mb"] for cp in checkpoints if cp.get("memory_rss_mb") is not None and cp["memory_rss_mb"] > 0.0
+    ]
+    if valid_rss_readings:
+        peak_rss: float | None = round(max(valid_rss_readings), 2)
+        peak_rss_valid = True
+    else:
+        peak_rss = None
+        peak_rss_valid = False
+
+    telemetry_passed = (peak_rss_valid and peak_rss is not None and peak_rss > 0.0) if require_telemetry else True
+    telemetry_mode = "STRICT_ENFORCED" if require_telemetry else "WEAKER_OPTED_OUT_UNENFORCED"
+    telemetry_gate_warning = None if require_telemetry else "WARNING: Telemetry gate enforcement was weakened via --allow-missing-telemetry."
+
+    passed = (
+        all_audit_valid
+        and rogue_events == 0
+        and isolation_verified
+        and reconciliation_passed
+        and drain_succeeded
+        and workers_clean
+        and telemetry_passed
+    )
 
     report = {
-        "status": "PASSED" if (all_audit_valid and rogue_events == 0) else "FAILED",
+        "status": "PASSED" if passed else "FAILED",
         "scope": "Multi-worker process soak test harness",
         "configuration": {
             "workers": workers,
@@ -381,16 +563,34 @@ def run_soak_test(
             "total_rejected": total_rejected,
             "final_processed": final_processed,
             "final_pending": final_pending,
+            "final_retry": final_retry,
+            "final_in_flight": final_in_flight,
             "final_dead": final_dead,
             "overall_throughput_eps": round(overall_eps, 2),
             "latency_p50_ms": round(p50, 2),
             "latency_p95_ms": round(p95, 2),
             "latency_p99_ms": round(p99, 2),
-            "peak_rss_mb": round(max([cp["memory_rss_mb"] for cp in checkpoints] or [0.0]), 2),
+            "peak_rss_mb": peak_rss,
+            "peak_rss_valid": peak_rss_valid,
         },
         "integrity": {
-            "reconciliation_passed": reconciliation_ok,
+            "reconciliation_passed": reconciliation_passed,
+            "reconciliation_db_ok": reconciliation_ok,
+            "submission_accounting_ok": submission_accounting_ok,
+            "drain_succeeded": drain_succeeded,
+            "worker_join_clean": workers_clean,
+            "worker_join_timeouts": worker_join_timeouts,
+            "worker_leak_detected": worker_leak_detected,
+            "worker_unclean_exits": worker_unclean_exits,
+            "cleanup_exceptions": cleanup_exceptions,
+            "telemetry_mode": telemetry_mode,
+            "telemetry_required": require_telemetry,
+            "telemetry_valid": peak_rss_valid,
+            "telemetry_passed": telemetry_passed,
+            "telemetry_gate_warning": telemetry_gate_warning,
             "cross_tenant_violations": rogue_events,
+            "isolation_verified": isolation_verified,
+            "tenant_event_counts": tenant_event_counts,
             "audit_chains_valid": all_audit_valid,
             "audit_verifications_per_tenant": audit_verifications,
         },
@@ -416,9 +616,13 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
     parser.add_argument("--database-url", type=str, default=None, help="Database connection URL")
     parser.add_argument("--output", type=str, default=None, help="Output JSON path")
+    parser.add_argument("--checkpoint-interval", type=float, default=5.0, help="Interval between telemetry checkpoints (default: 5.0)")
+    parser.add_argument("--checkpoint-file", type=str, default=None, help="Output JSON path for checkpoints")
+    parser.add_argument("--allow-missing-telemetry", action="store_true", default=False, help="Allow run to pass even if RSS telemetry is unavailable")
     args = parser.parse_args()
 
     out_path = Path(args.output) if args.output else None
+    chk_path = Path(args.checkpoint_file) if args.checkpoint_file else None
     report = run_soak_test(
         workers=args.workers,
         duration=args.duration,
@@ -427,6 +631,9 @@ def main() -> int:
         seed=args.seed,
         db_url=args.database_url,
         output_path=out_path,
+        checkpoint_interval=args.checkpoint_interval,
+        checkpoint_file=chk_path,
+        require_telemetry=not args.allow_missing_telemetry,
     )
 
     return 0 if report["status"] == "PASSED" else 1

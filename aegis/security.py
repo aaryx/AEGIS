@@ -423,7 +423,7 @@ def authenticate(request: Request, db=Depends(db_session)) -> Principal:
             id=f"agt-user-{agent.id}",
             organization_id=agent.organization_id,
             username=f"agent:{agent.name}",
-            password_hash="",
+            password_hash="",  # nosec: B106 # synthetic agent principal with disabled password login
             role="VIEWER",
             active=True,
         )

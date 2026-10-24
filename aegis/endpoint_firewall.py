@@ -9,7 +9,7 @@ import ipaddress
 import json
 import os
 import stat
-import subprocess
+import subprocess  # nosec: B404 # endpoint firewall invokes /usr/sbin/nft without shell
 import sys
 from contextlib import contextmanager
 from typing import Any
