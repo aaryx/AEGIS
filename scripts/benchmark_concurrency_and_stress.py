@@ -99,7 +99,7 @@ def main() -> int:
     settings = Settings(
         environment="testing",
         database_url=db_url,
-        audit_secret="benchmark-secret-audit-key-32chars-min",  # noqa: S106
+        audit_secret="benchmark-secret-audit-key-32chars-min",  # noqa: S106 # nosec: B106 # local benchmark synthetic key
         _env_file=None,
     )
 

@@ -190,9 +190,19 @@ def dispatch_once(settings, sessions):
                     )
                 )
     with sessions.begin() as db:
+        from aegis.soar import lock_tenant
+
+        candidates = list(db.execute(
+            select(Delivery.id, Delivery.organization_id)
+            .where(Delivery.state.in_(["PENDING", "RETRY"]), Delivery.available_at <= time.time())
+            .order_by(Delivery.id).limit(20)
+        ))
+        for org in sorted({row.organization_id for row in candidates}):
+            lock_tenant(db, org)
         jobs = list(
             db.scalars(
                 select(Delivery)
+                .where(Delivery.id.in_([row.id for row in candidates]))
                 .where(Delivery.state.in_(["PENDING", "RETRY"]), Delivery.available_at <= time.time())
                 .with_for_update(skip_locked=True)
                 .limit(20)
@@ -309,6 +319,9 @@ def save_integration(
 ):
     settings = request.app.state.settings
     validate_endpoint(settings, data.endpoint)
+    from aegis.soar import lock_tenant
+
+    lock_tenant(db, principal.organization_id)
     if integration_id == "new":
         if data.revision:
             raise HTTPException(409, "New integrations require revision zero")
@@ -381,6 +394,9 @@ def retry_delivery(
     principal=Depends(require("integrations.manage")),
     db=Depends(db_session),
 ):
+    from aegis.soar import lock_tenant
+
+    lock_tenant(db, principal.organization_id)
     row = owned(db, Delivery, delivery_id, principal.organization_id)
     db.refresh(row, with_for_update=True)
     if row.state != "DEAD":

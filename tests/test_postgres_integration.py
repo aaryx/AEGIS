@@ -899,6 +899,7 @@ def test_postgres_concurrent_storyline_correlation(pg_system):
     from sqlalchemy import func
 
     from aegis.db import Alert, Incident, Storyline, StorylineMember
+    from aegis.soar import lock_tenant
     from aegis.storylines import correlate
 
     sessions, org = pg_system["sessions"], pg_system["org"]
@@ -922,11 +923,16 @@ def test_postgres_concurrent_storyline_correlation(pg_system):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(run, range(4)))
     assert sum(r["changed"] for r in results) == 1
+    with sessions() as db:
+        initial_revision = db.scalar(select(Incident.revision).join(Storyline, Storyline.incident_id == Incident.id)
+                                     .where(Storyline.organization_id == org))
 
     def update_or_correlate(index):
         if index % 2:
             return run(index)
         with sessions.begin() as db:
+            # Match update_status's production protocol: tenant before incident.
+            lock_tenant(db, org)
             incident = db.scalar(select(Incident).join(Storyline, Storyline.incident_id == Incident.id)
                                  .where(Storyline.organization_id == org).with_for_update(of=Incident))
             incident.revision += 1
@@ -937,6 +943,8 @@ def test_postgres_concurrent_storyline_correlation(pg_system):
     with ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(update_or_correlate, range(8)))
     with sessions() as db:
+        assert db.scalar(select(Incident.revision).join(Storyline, Storyline.incident_id == Incident.id)
+                         .where(Storyline.organization_id == org)) == initial_revision + 4
         assert db.scalar(select(func.count()).select_from(Storyline).where(Storyline.organization_id == org)) == 1
         assert db.scalar(select(func.count()).select_from(StorylineMember).where(StorylineMember.organization_id == org)) == 4
         assert verify_audit(db, pg_system["settings"], org) is True

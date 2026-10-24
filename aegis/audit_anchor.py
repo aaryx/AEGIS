@@ -191,8 +191,8 @@ class S3AuditAnchorAdapter:
         prefix: str = "audit-checkpoints",
         region: str = "us-east-1",
         endpoint_url: str | None = None,
-        access_key_id: SecretStr | str = "",
-        secret_access_key: SecretStr | str = "",
+        access_key_id: SecretStr | str | None = None,
+        secret_access_key: SecretStr | str | None = None,
         object_lock_mode: Literal["COMPLIANCE", "GOVERNANCE"] = "COMPLIANCE",
         retention_days: int = 365,
         kms_key_id: str | None = None,
@@ -206,12 +206,12 @@ class S3AuditAnchorAdapter:
         self._access_key = (
             access_key_id.get_secret_value()
             if isinstance(access_key_id, SecretStr)
-            else str(access_key_id)
+            else str(access_key_id or "")
         )
         self._secret_key = (
             secret_access_key.get_secret_value()
             if isinstance(secret_access_key, SecretStr)
-            else str(secret_access_key)
+            else str(secret_access_key or "")
         )
         self.object_lock_mode = object_lock_mode
         self.retention_days = retention_days

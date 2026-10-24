@@ -34,6 +34,8 @@ jobs:
       - name: Search outage and durable outbox recovery
         run: python scripts/failure_drill.py
       - run: python scripts/recovery_drill.py
+      - name: Linux network namespace containment qualification
+        run: sudo -E env "PATH=$PATH" "PYTHONPATH=$PWD" "PYTHON_BIN=$(which python)" bash scripts/test_containment_linux.sh
       - run: python scripts/compose_e2e.py
       - name: Scan API image
         uses: aquasecurity/trivy-action@0.35.0

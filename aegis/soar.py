@@ -155,7 +155,9 @@ class Adapter(Protocol):
 
 def lock_tenant(db, org):
     # A write lock also serializes SQLite, where SELECT FOR UPDATE is ignored.
-    db.execute(update(Organization).where(Organization.id == org).values(name=Organization.name))
+    # Do not flush pending resource mutations before obtaining the tenant gate.
+    with db.no_autoflush:
+        db.execute(update(Organization).where(Organization.id == org).values(name=Organization.name))
 
 
 def snapshot(db, org, kind, identifier):

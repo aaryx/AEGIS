@@ -18,7 +18,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from prometheus_client import generate_latest
 from pydantic import Field
-from redis import Redis
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
@@ -120,6 +119,7 @@ from aegis.security import (
 from aegis.storage import LocalStorage, OpenSearchStorage
 from aegis.storylines import correlate
 from aegis.storylines import detail as storyline_detail
+from aegis.transport import redis_client
 
 logger = logging.getLogger("aegis.api")
 PREFIX = "/api/v1"
@@ -311,11 +311,7 @@ def create_app(settings: Settings | None = None):
         description="Tenant-scoped security operations API. Cookie sessions require X-CSRF-Token on writes. CLI clients may use bearer sessions or scoped API keys.",
     )
     app.state.settings, app.state.engine, app.state.sessions = settings, engine, sessions
-    app.state.redis = (
-        Redis.from_url(settings.redis_url, socket_timeout=3, socket_connect_timeout=3)
-        if settings.redis_url
-        else None
-    )
+    app.state.redis = redis_client(settings)
     app.state.storage = OpenSearchStorage(settings) if settings.opensearch_url else LocalStorage(sessions)
     app.add_middleware(BodyLimitMiddleware, maximum=settings.max_request_bytes)
     from aegis.integrations import router as integration_router
@@ -504,6 +500,11 @@ def create_app(settings: Settings | None = None):
         if request.headers.get("origin") not in {None, settings.public_origin}:
             raise HTTPException(403, "Untrusted request origin")
         rate_limit(request, "login:" + (request.client.host if request.client else "unknown"), 10)
+        from aegis.soar import lock_tenant
+
+        org_id = db.scalar(select(User.organization_id).where(User.username == data.username))
+        if org_id:
+            lock_tenant(db, org_id)
         user = db.scalar(select(User).where(User.username == data.username).with_for_update())
         valid = check_password(user.password_hash if user else DUMMY_PASSWORD_HASH, data.password)
         if not user or not user.active or user.locked_until > time.time() or not valid:
@@ -659,6 +660,13 @@ def create_app(settings: Settings | None = None):
     @app.post(PREFIX + "/auth/password-reset/complete", tags=["auth"])
     def reset_complete(data: ResetComplete, request: Request, db=Depends(db_session)):
         rate_limit(request, "reset:" + (request.client.host if request.client else "unknown"), 5)
+        from aegis.soar import lock_tenant
+
+        org_id = db.scalar(select(PasswordReset.organization_id).where(
+            PasswordReset.token_hash == token_hash(data.token)
+        ))
+        if org_id:
+            lock_tenant(db, org_id)
         reset = db.scalar(
             select(PasswordReset)
             .where(
@@ -1143,9 +1151,12 @@ def create_app(settings: Settings | None = None):
         principal=Depends(authenticate),
         db=Depends(db_session),
     ):
+        from aegis.soar import lock_tenant
+
         permission = "cases.write" if resource == "cases" else resource + ".update"
         if permission not in principal.permissions:
             raise HTTPException(403, "Permission denied")
+        lock_tenant(db, principal.organization_id)
         model = RESOURCES[resource]
         row = db.scalar(
             select(model)
@@ -1379,6 +1390,9 @@ def create_app(settings: Settings | None = None):
         principal=Depends(require("rules.write")),
         db=Depends(db_session),
     ):
+        from aegis.soar import lock_tenant
+
+        lock_tenant(db, principal.organization_id)
         clean_rule_id = rule_id.removeprefix("AEGIS-")
         clean_doc_id = data.document.id.removeprefix("AEGIS-")
         if clean_rule_id != clean_doc_id:
@@ -1443,6 +1457,9 @@ def create_app(settings: Settings | None = None):
         principal=Depends(require("rules.write")),
         db=Depends(db_session),
     ):
+        from aegis.soar import lock_tenant
+
+        lock_tenant(db, principal.organization_id)
         row = db.scalar(
             select(Rule)
             .where(
@@ -1494,6 +1511,9 @@ def create_app(settings: Settings | None = None):
         principal=Depends(require("rules.write")),
         db=Depends(db_session),
     ):
+        from aegis.soar import lock_tenant
+
+        lock_tenant(db, principal.organization_id)
         row = db.scalar(
             select(Rule)
             .where(
@@ -1900,6 +1920,13 @@ def create_app(settings: Settings | None = None):
         db=Depends(db_session),
     ):
         rate_limit(request, f"enroll:{data.name}", 10)
+        from aegis.soar import lock_tenant
+
+        org_id = db.scalar(select(AgentEnrollmentToken.organization_id).where(
+            AgentEnrollmentToken.token_hash == token_hash(data.enrollment_token)
+        ))
+        if org_id:
+            lock_tenant(db, org_id)
         token_record = db.scalar(
             select(AgentEnrollmentToken)
             .where(
@@ -2696,6 +2723,9 @@ def create_app(settings: Settings | None = None):
     def retry_search(
         event_id: str, request: Request, principal=Depends(require("system.manage")), db=Depends(db_session)
     ):
+        from aegis.soar import lock_tenant
+
+        lock_tenant(db, principal.organization_id)
         row = db.scalar(
             select(SearchJob)
             .where(SearchJob.event_id == event_id, SearchJob.organization_id == principal.organization_id)

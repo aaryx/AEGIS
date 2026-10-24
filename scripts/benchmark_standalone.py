@@ -33,7 +33,7 @@ def main():
         settings = Settings(
             environment="testing",
             database_url=f"sqlite:///{db_path}",
-            audit_secret="bench-secret-audit-integrity-key-32chars",  # noqa: S106
+            audit_secret="bench-secret-audit-integrity-key-32chars",  # noqa: S106 # nosec: B106 # local benchmark synthetic key
             _env_file=None,
         )
 
