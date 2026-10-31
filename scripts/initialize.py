@@ -6,6 +6,7 @@ import httpx
 import psycopg
 from alembic import command
 from alembic.config import Config
+from dotenv import load_dotenv
 from psycopg import sql
 from sqlalchemy import select
 from sqlalchemy.engine import make_url
@@ -18,6 +19,7 @@ from aegis.storage import OpenSearchStorage
 
 
 def main():
+    load_dotenv(".env")
     settings = get_settings()
     command.upgrade(Config("alembic.ini"), "head")
     if settings.database_url.startswith("postgresql"):
@@ -66,6 +68,10 @@ def main():
                     "GRANT SELECT, DELETE ON ALL TABLES IN SCHEMA public TO aegis_maintenance"
                 )
                 connection.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO aegis_maintenance")
+                # retention writes a system.retention audit row, which appends to the hash chain
+                connection.execute("GRANT INSERT ON audit_logs TO aegis_maintenance")
+                connection.execute("GRANT INSERT, UPDATE ON audit_heads TO aegis_maintenance")
+                connection.execute("GRANT UPDATE (audit_head) ON organizations TO aegis_maintenance")
                 connection.execute("REVOKE UPDATE, DELETE ON audit_logs FROM aegis_maintenance")
     _, sessions = database(settings.database_url)
     with sessions.begin() as db:

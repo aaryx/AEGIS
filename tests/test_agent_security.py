@@ -7,7 +7,7 @@ import time
 
 import pytest
 from httpx import HTTPStatusError
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from aegis.agent import EndpointAgent
 from aegis.crypto import (
@@ -17,7 +17,8 @@ from aegis.crypto import (
     get_controller_public_key_hex,
     get_controller_signing_key,
 )
-from aegis.db import Agent, Entity
+from aegis.db import Agent, AuditLog, Entity, PlaybookExecution
+from aegis.security import ROLES
 
 
 def test_agent_enrollment_with_single_use_expiring_token(system):
@@ -410,3 +411,60 @@ def test_compromised_agent_cannot_impersonate_another_endpoint(system):
     )
     assert resp_receipt.status_code == 403
 
+
+
+@pytest.mark.parametrize("role", list(ROLES))
+def test_heartbeat_requires_agent_or_manage_permission(system, role):
+    """B1: a human heartbeat for an enrolled agent needs agents.heartbeat or agents.manage."""
+    client = system["client"]
+    agent = EndpointAgent(name="SRV-SPOOF", simulation_mode=True)
+    agent.heartbeat(client=client)  # enrolled by the SUPER_ADMIN default header
+
+    def posture():
+        with system["app"].state.sessions() as db:
+            row = db.scalar(select(Agent).where(Agent.name == agent.name))
+            entity = db.scalar(select(Entity).where(Entity.type == "host", Entity.value == agent.name))
+            return row.ip, row.version, row.isolation_status, entity.attributes
+
+    before = posture()
+    spoof = agent.get_system_info() | {"ip": "203.0.113.9", "version": "9.9.9", "isolation_status": "ENFORCED"}
+    client.headers["Authorization"] = "Bearer " + system["tokens"][role]
+    resp = client.post("/api/v1/agents/heartbeat", json=spoof)
+
+    allowed = bool(ROLES[role] & {"agents.heartbeat", "agents.manage"})
+    assert resp.status_code == (200 if allowed else 403), resp.text
+    if not allowed:
+        assert posture() == before
+
+
+@pytest.mark.parametrize("role", list(ROLES))
+def test_command_poll_requires_agents_poll(system, role):
+    """B2: polling commands dispatches, so it needs agents.poll, not playbooks.read."""
+    client = system["client"]
+    agent = EndpointAgent(name="SRV-POLL", simulation_mode=True)
+    agent.heartbeat(client=client)
+    with system["app"].state.sessions() as db:
+        entity = db.scalar(select(Entity).where(Entity.type == "host", Entity.value == agent.name))
+
+    client.headers["Authorization"] = "Bearer " + system["tokens"]["SENIOR_ANALYST"]
+    execution_id = client.post(
+        "/api/v1/playbooks/request",
+        json={"action": "isolate_host", "target": entity.id},
+        headers={"Idempotency-Key": "poll-gate-" + role},
+    ).json()["id"]
+    client.headers["Authorization"] = "Bearer " + system["tokens"]["SOC_MANAGER"]
+    assert client.post(f"/api/v1/playbooks/{execution_id}/approve").status_code == 200
+
+    def state():
+        with system["app"].state.sessions() as db:
+            return db.get(PlaybookExecution, execution_id).status, db.scalar(select(func.count(AuditLog.id)))
+
+    before = state()
+    assert before[0] == "APPROVED"
+    client.headers["Authorization"] = "Bearer " + system["tokens"][role]
+    resp = client.get(f"/api/v1/agents/{agent.name}/commands")
+
+    allowed = "agents.poll" in ROLES[role]
+    assert resp.status_code == (200 if allowed else 403), resp.text
+    if not allowed:
+        assert state() == before
