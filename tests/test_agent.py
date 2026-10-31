@@ -117,7 +117,7 @@ def test_agent_api_registration_and_containment_lifecycle(system):
     client.post(f"/api/v1/playbooks/{uniso_id}/approve")
 
     # Run cycle directly executes and submits receipt
-    client.headers["Authorization"] = "Bearer " + system["tokens"]["SENIOR_ANALYST"]
+    client.headers["Authorization"] = "Bearer " + system["tokens"]["SUPER_ADMIN"]
     cycle_summary = agent.run_cycle(client=client)
     assert cycle_summary["pending_commands"] == 1
     assert len(cycle_summary["executed"]) == 1

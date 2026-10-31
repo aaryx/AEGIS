@@ -1,8 +1,12 @@
 """Tests for Audit key versioning & checkpoints (P1) and Enterprise MFA (P1).
 """
 
+import json
+
+from sqlalchemy import select
 
 from aegis.crypto import generate_totp
+from aegis.db import AuditLog, User
 from aegis.security import (
     audit,
     create_audit_checkpoint,
@@ -137,3 +141,34 @@ def test_audit_verification_closed_failure_on_missing_or_tampered_head(system):
     with system["app"].state.sessions() as db:
         assert verify_audit(db, settings, org_id) is False
 
+
+
+def test_mfa_setup_refused_when_enabled(system):
+    """B3: a session for an MFA-enabled account cannot re-key the second factor."""
+    client = system["client"]
+    s1 = client.post("/api/v1/auth/mfa/setup").json()["secret"]
+    assert client.post("/api/v1/auth/mfa/verify", json={"code": generate_totp(s1)}).status_code == 200
+
+    resp = client.post("/api/v1/auth/mfa/setup")
+    assert resp.status_code == 409, resp.text
+    with system["app"].state.sessions() as db:
+        assert db.get(User, system["users"]["SUPER_ADMIN"].id).mfa_secret == s1
+
+    client.headers.pop("Authorization")
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "super_admin", "password": "correct-test-password-123", "mfa_code": generate_totp(s1)},
+    )
+    assert login.status_code == 200 and "access_token" in login.json()
+
+
+def test_mfa_setup_is_audited_without_secret(system):
+    """B3: first-time MFA setup leaves one audit row that does not leak the secret."""
+    user_id = system["users"]["SUPER_ADMIN"].id
+    secret = system["client"].post("/api/v1/auth/mfa/setup").json()["secret"]
+    with system["app"].state.sessions() as db:
+        rows = db.scalars(
+            select(AuditLog).where(AuditLog.action == "auth.mfa_setup", AuditLog.actor == user_id)
+        ).all()
+    assert len(rows) == 1
+    assert secret not in json.dumps(rows[0].details)

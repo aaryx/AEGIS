@@ -122,6 +122,7 @@ def test_simulation_is_truthful_in_receipt_heartbeat_audit_and_api(system):
     assert result["status"] == result["containment_status"] == "SIMULATED"
     assert result["result"]["enforced_externally"] is False
     assert result["result"]["receipt_authenticated"] is True
+    system["client"].headers["Authorization"] = "Bearer " + system["tokens"]["SUPER_ADMIN"]
     assert agent.heartbeat(client=system["client"])["isolation_status"] == "SIMULATED"
     agents = system["client"].get("/api/v1/agents").json()
     assert next(a for a in agents if a["name"] == agent.name)["isolation_status"] == "SIMULATED"
@@ -164,6 +165,7 @@ def test_authentic_but_unsubstantiated_receipt_is_unknown(system, details, expec
 def test_heartbeat_cannot_forge_enforcement_or_replace_key(system):
     agent, _ = prepared(system)
     client = system["client"]
+    client.headers["Authorization"] = "Bearer " + system["tokens"]["SUPER_ADMIN"]
     payload = agent.get_system_info() | {"isolation_status": "ENFORCED"}
     response = client.post("/api/v1/agents/heartbeat", json=payload)
     assert response.status_code == 200

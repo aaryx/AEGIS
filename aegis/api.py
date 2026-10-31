@@ -570,14 +570,26 @@ def create_app(settings: Settings | None = None):
 
     @app.post(PREFIX + "/auth/mfa/setup", tags=["auth"])
     def mfa_setup(
+        request: Request,
         principal=Depends(authenticate),
         db=Depends(db_session),
     ):
-        secret = generate_totp_secret()
         user = db.get(User, principal.user.id)
         if not user:
             raise HTTPException(404, "User not found")
+        if user.mfa_enabled:
+            raise HTTPException(409, "MFA is already enabled for this account")
+        secret = generate_totp_secret()
         user.mfa_secret = secret
+        audit(
+            db,
+            settings,
+            principal.organization_id,
+            user.id,
+            "auth.mfa_setup",
+            user.id,
+            request=request,
+        )
         db.commit()
         uri = get_totp_uri(secret, user.username)
         return {"secret": secret, "otpauth_uri": uri}
@@ -2155,7 +2167,7 @@ def create_app(settings: Settings | None = None):
         principal=Depends(authenticate),
         db=Depends(db_session),
     ):
-        if "agents.heartbeat" not in principal.permissions and "collectors.read" not in principal.permissions:
+        if "agents.heartbeat" not in principal.permissions and "agents.manage" not in principal.permissions:
             raise HTTPException(403, "Permission denied")
         if principal.agent is not None and (principal.agent.name != data.name or principal.agent.status != "ENROLLED"):
             raise HTTPException(403, "Agent not authorized to heartbeat for another endpoint")
@@ -2281,7 +2293,7 @@ def create_app(settings: Settings | None = None):
         principal=Depends(authenticate),
         db=Depends(db_session),
     ):
-        if "agents.poll" not in principal.permissions and "playbooks.read" not in principal.permissions:
+        if "agents.poll" not in principal.permissions:
             raise HTTPException(403, "Permission denied")
         # Enforce agent-to-host authorization
         if principal.agent is not None:

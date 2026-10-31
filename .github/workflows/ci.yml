@@ -31,6 +31,21 @@ jobs:
       - run: python scripts/dev.py integration
       - run: python scripts/acceptance.py
       - run: docker compose exec -T api python scripts/integration_checks.py
+      - name: Retention role can write the audit chain
+        run: |
+          docker compose exec -T retention python - <<'PY'
+          from sqlalchemy import select
+          from aegis.config import get_settings
+          from aegis.db import Organization, database
+          from aegis.security import audit
+          settings = get_settings()
+          # same URL choice as aegis.retention.main, so this runs as aegis_maintenance
+          _, sessions = database(settings.maintenance_database_url or settings.database_url)
+          with sessions() as db:
+              audit(db, settings, db.scalar(select(Organization.id)), "system.retention", "ci.grant-check")
+              db.rollback()
+          print("aegis_maintenance can write the audit chain")
+          PY
       - name: Search outage and durable outbox recovery
         run: python scripts/failure_drill.py
       - run: python scripts/recovery_drill.py
