@@ -19,6 +19,11 @@ def main():
     parser.add_argument(
         "command", choices=["install", "dev", "test", "integration", "lint", "format", "typecheck", "security", "build"]
     )
+    parser.add_argument(
+        "--postgres-only",
+        action="store_true",
+        help="Run only PostgreSQL integration tests without Redis/OpenSearch",
+    )
     args = parser.parse_args()
     match args.command:
         case "install":
@@ -57,7 +62,10 @@ def main():
             run([sys.executable, "-m", "pytest"])
             run([NPM, "test"], ROOT / "web")
         case "integration":
-            run([sys.executable, "scripts/integration_gate.py"])
+            cmd = [sys.executable, "scripts/integration_gate.py"]
+            if args.postgres_only:
+                cmd.append("--postgres-only")
+            run(cmd)
         case "lint":
             run([sys.executable, "-m", "ruff", "check", "aegis", "tests", "scripts"])
             run([NPM, "run", "typecheck"], ROOT / "web")

@@ -492,6 +492,7 @@ def advance(db, settings, run):
                 or "playbooks.approve" not in ROLES[approver.role]
                 or not run.approved_at
                 or time.time() - run.approved_at > settings.response_approval_seconds
+                or approver.id == run.requested_by
             ):
                 run.approved_by, run.approved_at = None, None
                 run.status = "WAITING_FOR_APPROVAL"

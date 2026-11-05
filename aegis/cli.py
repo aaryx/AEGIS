@@ -352,6 +352,56 @@ def test_rule(
     )
 
 
+@groups["rules"].command("simulate")
+def simulate_rules_cli(
+    ctx: typer.Context,
+    events: Path | None = typer.Option(None, help="Offline JSON array of EventInput or normalized Event objects"),
+    dataset: str | None = typer.Option(None, help="Bundled fixture ID, e.g. AUTH-001"),
+    rule: Path | None = typer.Option(None, help="Candidate rule YAML; otherwise use bundled rules"),
+    tenant: str = typer.Option("offline-lab", help="Local namespace; not an authorization credential"),
+):
+    """Simulate detections locally with no API calls, database writes or response actions."""
+    from aegis.replay import get_labelled_dataset
+    from aegis.rule_checks import fixtures
+    from aegis.rules import builtin_rules
+    from aegis.tuning import run_simulation
+
+    if (events is None) == (dataset is None):
+        raise typer.BadParameter("Provide exactly one of --events or --dataset")
+    tenant = tenant.strip()
+    if not tenant:
+        raise typer.BadParameter("Tenant must not be empty")
+    try:
+        if rule is not None:
+            if rule.stat().st_size > 5 * 1024 * 1024:
+                raise ValueError("Rule file exceeds 5 MB")
+            rules = [DetectionRule.model_validate(yaml.safe_load(rule.read_text(encoding="utf-8-sig")))]
+        else:
+            rules = builtin_rules()
+        if dataset is not None:
+            clean_dataset = dataset.strip().upper().removeprefix("AEGIS-")
+            is_all = clean_dataset in {"ALL", "ALL_FIXTURES", "ALL-FIXTURES", "ALL_RULES"}
+            if not is_all and clean_dataset not in fixtures():
+                raise ValueError("Unknown fixture ID")
+            if rule is None:
+                if not is_all:
+                    rules = [item for item in rules if item.id == f"AEGIS-{clean_dataset}"]
+            records = get_labelled_dataset("all" if is_all else clean_dataset, tenant)
+        else:
+            assert events is not None
+            if events.stat().st_size > 20 * 1024 * 1024:
+                raise ValueError("Event file exceeds 20 MB")
+            records = json.loads(events.read_text(encoding="utf-8-sig"))
+            if not isinstance(records, list):
+                raise ValueError("Event file must contain a JSON array")
+        result = run_simulation(records, rules, tenant, labelled_fixture=dataset is not None)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    output(ctx, result)
+    if result["errors"]:
+        raise typer.Exit(2)
+
+
 @groups["rules"].command("save")
 def save_rule(ctx: typer.Context, path: Path, summary: str, version: int = 0, enabled: bool = True):
     rule = DetectionRule.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))

@@ -182,7 +182,16 @@ def execute(db, settings, principal, execution_id, request=None):
         if conflict:
             raise HTTPException(409, "Endpoint already has an unresolved command")
 
-    entity = db.get(Entity, execution.target) if execution.action in HIGH_IMPACT else None
+    entity = (
+        db.scalar(
+            select(Entity).where(
+                Entity.id == execution.target,
+                Entity.organization_id == principal.organization_id,
+            )
+        )
+        if execution.action in HIGH_IMPACT
+        else None
+    )
     agent = None
     if entity and entity.type == "host":
         agent = db.scalar(

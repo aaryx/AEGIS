@@ -230,7 +230,7 @@ def decision(
     else:
         if run.status != "WAITING_FOR_APPROVAL":
             reject(409, "Execution is not awaiting approval")
-        if run.requested_by == principal.user.id:
+        if run.requested_by == principal.user.id or principal.api_key_id:
             reject(403, "Independent human approval required")
         if data.decision == "reject":
             finish(db, settings, run, "CANCELLED")

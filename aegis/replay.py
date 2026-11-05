@@ -164,6 +164,10 @@ def get_labelled_dataset(name: str, org_id: str) -> list[dict[str, Any]]:
                 raw_event=raw_clean,
             )
             normalized = parser.normalize(event_inp, org_id).model_dump(mode="json")
+            if "metadata" in raw_clean and isinstance(raw_clean["metadata"], dict):
+                for k, v in raw_clean["metadata"].items():
+                    if k not in {"parser", "classification", "tenant", "organization_id", "source"}:
+                        normalized["metadata"][k] = v
             normalized["event_id"] = f"attack-{rule_id.lower()}-{i:04d}"
             normalized["_ground_truth"] = "ATTACK"
             normalized["_target_rule"] = rule_id
@@ -192,6 +196,10 @@ def get_labelled_dataset(name: str, org_id: str) -> list[dict[str, Any]]:
                 raw_event=raw_clean,
             )
             normalized = parser.normalize(event_inp, org_id).model_dump(mode="json")
+            if "metadata" in raw_clean and isinstance(raw_clean["metadata"], dict):
+                for k, v in raw_clean["metadata"].items():
+                    if k not in {"parser", "classification", "tenant", "organization_id", "source"}:
+                        normalized["metadata"][k] = v
             normalized["event_id"] = f"benign-{rule_id.lower()}-{i:04d}"
             normalized["_ground_truth"] = "BENIGN"
             normalized["_target_rule"] = rule_id

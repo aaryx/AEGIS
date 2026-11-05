@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest==9.0.3", "pytest-cov==7.0.0", "ruff==0.15.6", "mypy==1.19.1", "types-PyYAML==6.0.12.20250915", "pip-audit==2.10.0", "bandit==1.9.4"]
+dev = ["pytest==9.0.3", "pytest-cov==7.0.0", "ruff==0.15.6", "mypy==1.19.1", "types-PyYAML==6.0.12.20250915", "pip-audit==2.10.0", "bandit==1.9.4", "defusedxml==0.7.1"]
 
 [project.scripts]
 aegis = "aegis.cli:app"

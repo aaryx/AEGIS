@@ -622,6 +622,51 @@ def test_ironclad_10_tenant_isolation_soar_playbooks_and_executions(system):
     pb_cross = client.get(f"/api/v1/soar/playbooks/{pb_id}")
     assert pb_cross.status_code == 404
 
+    # SEC-02: Tenant B tries to request a response action targeting Tenant A's host entity -> 404
+    with system["app"].state.sessions.begin() as db:
+        host_a = Entity(
+            organization_id=system["org"],
+            type="host",
+            value="SRV-ORG-A-SEC02",
+            attributes={"untouched": True},
+        )
+        db.add(host_a)
+        db.flush()
+        host_a_id = host_a.id
+
+    req_cross = client.post(
+        "/api/v1/playbooks/request",
+        json={"action": "isolate_host", "target": host_a_id},
+        headers={"Idempotency-Key": "idem-cross-tenant-sec02-01"},
+    )
+    assert req_cross.status_code == 404
+    assert "does not exist" in req_cross.json()["error"]["message"].lower()
+
+    # Even if an execution record in Tenant B somehow references Tenant A's target, execute() fails closed
+    with system["app"].state.sessions.begin() as db:
+        outsider_user = db.scalar(select(User).where(User.organization_id == system["other"]))
+        forged_exec = PlaybookExecution(
+            id="exec-cross-tenant-forged",
+            organization_id=system["other"],
+            action="isolate_host",
+            target=host_a_id,
+            requested_by=outsider_user.id,
+            approved_by=outsider_user.id,
+            idempotency_key="forged-cross-key-01",
+            status="APPROVED",
+            result={},
+        )
+        db.add(forged_exec)
+
+    client.headers["Authorization"] = "Bearer " + system["tokens"]["OUTSIDER"]
+    exec_cross = client.post("/api/v1/playbooks/exec-cross-tenant-forged/execute")
+    assert exec_cross.status_code in {403, 404}
+
+    # Verify that Org A's entity remains completely untouched and no containment executed
+    with system["app"].state.sessions() as db:
+        refreshed_host = db.get(Entity, host_a_id)
+        assert refreshed_host.attributes == {"untouched": True}
+
 
 def test_ironclad_11_soar_separation_of_duty_prevents_self_approval(system):
     """SOAR approval must enforce separation of duties: requester cannot approve own execution."""

@@ -1,5 +1,45 @@
 # Operational CLI
 
+## Offline detection rule simulator
+
+```sh
+aegis --format json rules simulate --dataset AUTH-001
+aegis --format json rules simulate --dataset ALL
+aegis --format json rules simulate --dataset AUTH-001 --rule candidate.yml
+aegis --format json rules simulate --events events.json --tenant lab-a
+```
+
+`rules simulate` runs locally using the existing evaluator and a fresh in-memory
+replay store. It requires no server or token and creates no ingestion records,
+alerts, incidents, replay jobs or response actions. The existing top-level
+`simulate` and `replay` commands send events to ingestion; they are separate workflows.
+
+Choose exactly one input: a bundled fixture ID or a JSON array (20 MB and 10,000
+events maximum). File entries are normalized `Event` objects or `EventInput`
+objects with explicit timezone-aware timestamps, for example:
+
+```json
+[{"source":"lab","timestamp":"2026-10-01T12:00:00Z","raw_event":{"host":"LAB","action":"sudo"}}]
+```
+
+File input uses all bundled rules unless `--rule` supplies one candidate YAML.
+Dataset input defaults to its corresponding bundled rule. Candidates are evaluated
+regardless of lifecycle status, without saving or activating them. Events are sorted
+by timestamp and ID; duplicate IDs and malformed records are reported and skipped.
+An optional top-level `organization_id` must match `--tenant`. Untagged local events
+are assigned to that namespace; this is not server authorization or proof of ownership.
+
+Reports contain event totals, evaluator match counts per rule, evidence, elapsed
+processing time and errors. Any record/evaluation error gives exit code 2, with
+partial results. Bundled fixtures additionally report benign-match candidates and
+rules missing the attack scenario. Positive and negative sequences have separate
+state. Quality results are withheld on errors and for unlabelled files; they are
+not production false-positive rates. Matches precede production cooldown/suppression,
+enrichment and response handling, so counts are not predicted production alert counts.
+Replay is event-time ordered and does not reproduce production arrival lateness.
+
+## Other commands
+
 New operational commands:
 `aegis collectors run <log> --spool <db> --source-type linux`,
 `aegis collectors spool <db>`, and `aegis integrations list|save|sync|deliveries`.

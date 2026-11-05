@@ -89,7 +89,7 @@ def pg_system(pg_engine, pg_session_factory):
         redis_url=os.environ.get("REDIS_URL"),
         opensearch_url=os.environ.get("OPENSEARCH_URL"),
         opensearch_username=os.environ.get("OPENSEARCH_USERNAME", "aegis"),
-        opensearch_password=os.environ.get("OPENSEARCH_PASSWORD"),
+        opensearch_password=os.environ.get("OPENSEARCH_PASSWORD") or "",
         intel_mock_enabled=True,
         _env_file=None,
     )

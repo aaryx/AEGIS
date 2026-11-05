@@ -1,5 +1,10 @@
 # AEGIS - Security Intelligence & Operations Platform
 
+Offline detection tuning: `aegis --format json rules simulate --dataset AUTH-001`
+evaluates the bundled attack and benign controls without ingestion, database writes,
+incidents or SOAR actions. Use `--rule candidate.yml` to test a tuned rule, or
+`--events events.json` to evaluate a local export. See [offline simulator usage](docs/cli.md#offline-detection-rule-simulator).
+
 [![CI Verification](https://github.com/aaryx/AEGIS/actions/workflows/ci.yml/badge.svg?branch=feature/ironclad-qualification)](https://github.com/aaryx/AEGIS/actions/runs/40081421870)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python: 3.12+](https://img.shields.io/badge/Python-3.12+-3776AB.svg?logo=python&logoColor=white)](pyproject.toml)
@@ -8,7 +13,7 @@
 [![PostgreSQL: 17](https://img.shields.io/badge/Database-PostgreSQL%2017-336791.svg?logo=postgresql&logoColor=white)](https://www.postgresql.org)
 [![OpenSearch: 3.5](https://img.shields.io/badge/Search-OpenSearch%203.5-005EB8.svg?logo=opensearch&logoColor=white)](https://opensearch.org)
 [![Redis: 7.4](https://img.shields.io/badge/Cache-Redis%207.4-DC382D.svg?logo=redis&logoColor=white)](https://redis.io)
-[![Backend Tests](https://img.shields.io/badge/Pytest-622%20Passed%20%7C%2031%20Skipped-brightgreen.svg)](tests/)
+[![Backend Tests](https://img.shields.io/badge/Pytest-666%20Passed%20%7C%2019%20Skipped-brightgreen.svg)](tests/)
 [![Integration Gate](https://img.shields.io/badge/Integration-62%20Passed%20(0%20Skips)-brightgreen.svg)](scripts/integration_gate.py)
 [![Frontend Tests](https://img.shields.io/badge/Vitest-35%20Passed-brightgreen.svg)](web/tests/)
 [![Security Audits](https://img.shields.io/badge/CVEs-0%20Known%20Vulnerabilities-brightgreen.svg)](requirements.lock)
@@ -21,7 +26,7 @@
 
 | Verification Gate | Result | Qualification Status |
 | :--- | :---: | :--- |
-| **Codebase Qualification** | **PASSED** | **CODE QUALIFIED** across 622 unit/regression tests and 62 live integration tests |
+| **Codebase Qualification** | **PASSED** | **CODE QUALIFIED** across 666 unit/regression tests, 25 gate regression tests, and 62 live integration tests |
 | **Remote GitHub Actions CI** | **PASSED** | **[Run 40081421870](https://github.com/aaryx/AEGIS/actions/runs/40081421870)** — All 38 pipeline steps succeeded |
 | **Dependency Security (CVEs)** | **PASSED** | 0 vulnerabilities across Python (`requirements.lock`) and Node.js (`package-lock.json`) |
 | **Secret Scan Audit** | **PASSED** | 0 secrets in current working tree and reachable Git history |
@@ -345,26 +350,35 @@ python scripts/dev.py typecheck
 python scripts/dev.py security
 
 # 4. Backend Unit & Regression Suite (Pytest)
-pytest --cov=aegis --cov-report=term-missing
-# Result: 622 passed, 31 skipped in 290s (83% coverage)
+pytest -m "not integration"
+# Result: 666 passed, 19 skipped, 11 deselected in ~343s
 
-# 5. Detection Rules Test Suite
+# 5. Integration Gate Regression Suite
+pytest tests/test_ci_release_gate.py tests/test_integration_gate.py
+# Result: 25 passed in 7.8s
+
+# 6. Detection Rules Test Suite
 aegis rules test --all
 # Result: 34 passed, 0 failed in 1.82s
 
-# 6. Frontend Unit Test Suite (Vitest)
+# 7. Frontend Unit Test Suite (Vitest)
 npm --prefix web test
-# Result: 35 passed across 8 test suites in 5.6s
+# Result: 35 passed across 8 test suites in 5.8s
 
-# 7. Frontend Production Bundle Build
+# 8. Frontend Production Bundle Build
 npm --prefix web run build
 # Result: Compiled successfully; static optimization complete
 
-# 8. Live Integration Gate (Requires Docker Compose)
+# 9. Live Integration Gate (Requires Docker Compose)
+# Run full distributed gate (PostgreSQL + Redis + OpenSearch):
 python scripts/dev.py integration
-# Result: 62 passed, 0 skipped (100% integration pass)
+# Result: 62 passed, 0 skipped, 0 deselected (100% pass)
 
-# 9. Multi-Tenant Soak Concurrency Smoke Run
+# Or run database verification only:
+python scripts/dev.py integration --postgres-only
+# Result: 58 passed, 0 skipped, 2 deselected (100% database pass)
+
+# 10. Multi-Tenant Soak Concurrency Smoke Run
 python scripts/soak_test.py --workers 4 --duration 15 --rate 100
 # Result: 352 events processed across 4 tenants, 0 pending, peak RSS captured, 4/4 audit chains verified
 ```
