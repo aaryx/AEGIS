@@ -24,6 +24,7 @@ import argparse
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import subprocess  # nosec B404
 import sys
@@ -140,7 +141,7 @@ def run_live_service_acceptance(
         settings = Settings(
             environment="testing",
             database_url=safe_db_url,
-            audit_secret="live-qualification-audit-secret-key-32chars-min",  # noqa: S106
+            audit_secret=secrets.token_hex(32),
             max_event_bytes=65536,
             queue_capacity=1000,
             soar_queue_capacity=50,

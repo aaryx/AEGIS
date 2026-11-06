@@ -18,6 +18,7 @@ Outputs structured results and quantitative timings to build/telemetry-recovery-
 import argparse
 import json
 import os
+import secrets
 import shutil
 import socket
 import tempfile
@@ -106,8 +107,8 @@ def run_recovery_acceptance(
 
         settings = Settings(
             database_url=db_url,
-            jwt_secret="aegis-recov-test-secret-at-least-32-bytes-long",  # noqa: S106
-            audit_hmac_key="aegis-recov-audit-hmac-key-for-testing-only",
+            jwt_secret=secrets.token_hex(32),
+            audit_hmac_key=secrets.token_hex(32),
             queue_capacity=5000,
             max_batch_events=500,
             max_event_bytes=65536,
