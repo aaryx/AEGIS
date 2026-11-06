@@ -17,12 +17,30 @@ def run(command, cwd=ROOT):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "command", choices=["install", "dev", "test", "integration", "lint", "format", "typecheck", "security", "build"]
+        "command",
+        choices=[
+            "install",
+            "dev",
+            "test",
+            "integration",
+            "demo",
+            "recovery",
+            "lint",
+            "format",
+            "typecheck",
+            "security",
+            "build",
+        ],
     )
     parser.add_argument(
         "--postgres-only",
         action="store_true",
         help="Run only PostgreSQL integration tests without Redis/OpenSearch",
+    )
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Run live OpenSSH container service acceptance demonstration",
     )
     args = parser.parse_args()
     match args.command:
@@ -66,6 +84,13 @@ def main():
             if args.postgres_only:
                 cmd.append("--postgres-only")
             run(cmd)
+        case "demo":
+            if args.live:
+                run([sys.executable, "scripts/live_workflow_acceptance.py"])
+            else:
+                run([sys.executable, "scripts/workflow_demo.py"])
+        case "recovery":
+            run([sys.executable, "scripts/recovery_acceptance.py"])
         case "lint":
             run([sys.executable, "-m", "ruff", "check", "aegis", "tests", "scripts"])
             run([NPM, "run", "typecheck"], ROOT / "web")

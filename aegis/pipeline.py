@@ -72,7 +72,11 @@ def ingest(db, settings, organization_id: str, events: list[EventInput], actor: 
     for event in normalized:
         evidence_hash = digest(event.raw_event)
         if event.event_id in existing:
-            prev_hash = existing[event.event_id].evidence_hash if hasattr(existing[event.event_id], "evidence_hash") else existing[event.event_id]
+            prev_hash = (
+                existing[event.event_id].evidence_hash
+                if hasattr(existing[event.event_id], "evidence_hash")
+                else existing[event.event_id]
+            )
             if prev_hash != evidence_hash:
                 raise ValueError("Source sequence was reused with different evidence")
             duplicates.append(event.event_id)
@@ -181,7 +185,12 @@ def ingest(db, settings, organization_id: str, events: list[EventInput], actor: 
         details={"accepted": len(accepted), "duplicates": len(duplicates)},
         request=request,
     )
-    return {"accepted": accepted, "duplicates": duplicates, "delivery": "at-least-once"}
+    return {
+        "accepted": accepted,
+        "duplicates": duplicates,
+        "delivery": "at-least-once",
+        "organization_id": organization_id,
+    }
 
 
 def enrich(event: dict, iocs: list[IOC]) -> list[IOC]:
@@ -232,7 +241,9 @@ def track_entities(db, org, event, cache, max_entities: int = 15):
         entity = cache.get(key)
         if not entity:
             entity = db.scalar(
-                select(Entity).where(Entity.organization_id == org, Entity.type == kind, Entity.value == value)
+                select(Entity).where(
+                    Entity.organization_id == org, Entity.type == kind, Entity.value == value
+                )
             )
         if not entity:
             if is_pg:
@@ -240,7 +251,9 @@ def track_entities(db, org, event, cache, max_entities: int = 15):
 
                 ent_stmt: Any = (
                     pg_insert(Entity)
-                    .values(id=uid(), organization_id=org, type=kind, value=value, risk_score=0, attributes={})
+                    .values(
+                        id=uid(), organization_id=org, type=kind, value=value, risk_score=0, attributes={}
+                    )
                     .on_conflict_do_nothing(index_elements=["organization_id", "type", "value"])
                 )
                 db.execute(ent_stmt)
@@ -249,12 +262,16 @@ def track_entities(db, org, event, cache, max_entities: int = 15):
 
                 ent_stmt = (
                     sqlite_insert(Entity)
-                    .values(id=uid(), organization_id=org, type=kind, value=value, risk_score=0, attributes={})
+                    .values(
+                        id=uid(), organization_id=org, type=kind, value=value, risk_score=0, attributes={}
+                    )
                     .on_conflict_do_nothing(index_elements=["organization_id", "type", "value"])
                 )
                 db.execute(ent_stmt)
             entity = db.scalar(
-                select(Entity).where(Entity.organization_id == org, Entity.type == kind, Entity.value == value)
+                select(Entity).where(
+                    Entity.organization_id == org, Entity.type == kind, Entity.value == value
+                )
             )
         cache[key] = entity
         ts = event.get("timestamp")
@@ -399,15 +416,23 @@ def detect_batch(db, settings, records, redis=None):
         for ioc in enrich(event, iocs):
             if not db.get(IOCMatch, (ioc.id, record.id)):
                 db.add(IOCMatch(ioc_id=ioc.id, event_id=record.id))
-        entities = track_entities(db, org, event, cache, max_entities=getattr(settings, "max_entities_per_event", 15))
+        entities = track_entities(
+            db, org, event, cache, max_entities=getattr(settings, "max_entities_per_event", 15)
+        )
         record.payload = event
         # Cache-only detection overlay; never alter the persisted event/evidence payload.
         from aegis.intelligence import detection_context
+
         try:
             with db.begin_nested():
                 context = detection_context(db, org, event)
         except Exception:
-            context = {"intel_verdict": "unknown", "intel_verdicts": ["unknown"], "intel_confidence": None, "intel_enrichment_ids": []}
+            context = {
+                "intel_verdict": "unknown",
+                "intel_verdicts": ["unknown"],
+                "intel_confidence": None,
+                "intel_enrichment_ids": [],
+            }
         event = {**event, "metadata": {**event.get("metadata", {}), **context}}
         for row, rule in rules:
             explanation = evaluate(rule, event, state, org)
