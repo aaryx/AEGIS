@@ -155,7 +155,9 @@ class Adapter(Protocol):
 
 def lock_tenant(db, org):
     # A write lock also serializes SQLite, where SELECT FOR UPDATE is ignored.
-    db.execute(update(Organization).where(Organization.id == org).values(name=Organization.name))
+    # Do not flush pending resource mutations before obtaining the tenant gate.
+    with db.no_autoflush:
+        db.execute(update(Organization).where(Organization.id == org).values(name=Organization.name))
 
 
 def snapshot(db, org, kind, identifier):
@@ -490,6 +492,7 @@ def advance(db, settings, run):
                 or "playbooks.approve" not in ROLES[approver.role]
                 or not run.approved_at
                 or time.time() - run.approved_at > settings.response_approval_seconds
+                or approver.id == run.requested_by
             ):
                 run.approved_by, run.approved_at = None, None
                 run.status = "WAITING_FOR_APPROVAL"

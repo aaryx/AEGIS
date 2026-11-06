@@ -68,7 +68,8 @@ def measure(size):
                 batch_start = time.perf_counter()
                 with sessions.begin() as db:
                     result = ingest(db, settings, org_id, rows[offset : offset + 50], "benchmark")
-                    assert len(result["accepted"]) == len(rows[offset : offset + 50])
+                    if len(result["accepted"]) != len(rows[offset : offset + 50]):
+                        raise RuntimeError("Ingested batch count mismatch")
                 latencies.append(time.perf_counter() - batch_start)
             ingestion_seconds = time.perf_counter() - started
             started = time.perf_counter()
@@ -85,7 +86,8 @@ def measure(size):
                 processed = db.scalar(
                     select(func.count()).select_from(EventRecord).where(EventRecord.state == "PROCESSED")
                 )
-                assert processed == size
+                if processed != size:
+                    raise RuntimeError(f"Processed count mismatch: {processed} != {size}")
             cpu_seconds = time.process_time() - cpu
             _, peak = tracemalloc.get_traced_memory()
             tracemalloc.stop()

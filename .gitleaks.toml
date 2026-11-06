@@ -5,6 +5,7 @@ useDefault = true
 description = "Allowlist false positives for tests, documentation, and compose healthcheck"
 paths = [
     '''tests/.*''',
+    '''scripts/.*''',
     '''docs/.*''',
     '''compose\.yaml''',
     '''compose\.production\.yaml''',

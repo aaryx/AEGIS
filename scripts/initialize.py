@@ -8,28 +8,23 @@ from alembic import command
 from alembic.config import Config
 from psycopg import sql
 from sqlalchemy import select
-from sqlalchemy.engine import make_url
 
 from aegis.config import get_settings
 from aegis.db import Organization, User, database
 from aegis.pipeline import seed_rules
 from aegis.security import PASSWORDS, audit
 from aegis.storage import OpenSearchStorage
+from aegis.transport import postgres_connect_kwargs
 
 
 def main():
     settings = get_settings()
     command.upgrade(Config("alembic.ini"), "head")
     if settings.database_url.startswith("postgresql"):
-        url = make_url(settings.database_url)
         password = os.environ.get("POSTGRES_RUNTIME_PASSWORD")
         if password:
             with psycopg.connect(
-                host=url.host,
-                port=url.port or 5432,
-                dbname=url.database,
-                user=url.username,
-                password=url.password,
+                **postgres_connect_kwargs(settings.database_url),
             ) as connection:
                 if not connection.execute(
                     "SELECT 1 FROM pg_roles WHERE rolname = %s", ("aegis_runtime",)
@@ -48,11 +43,7 @@ def main():
         maint_password = os.environ.get("POSTGRES_MAINTENANCE_PASSWORD")
         if maint_password:
             with psycopg.connect(
-                host=url.host,
-                port=url.port or 5432,
-                dbname=url.database,
-                user=url.username,
-                password=url.password,
+                **postgres_connect_kwargs(settings.database_url),
             ) as connection:
                 if not connection.execute(
                     "SELECT 1 FROM pg_roles WHERE rolname = %s", ("aegis_maintenance",)

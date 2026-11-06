@@ -601,10 +601,19 @@ class Delivery(Owned, Base):
 
 
 def database(url: str):
+    connect_args: dict[str, object] = {"check_same_thread": False, "timeout": 15} if url.startswith("sqlite") else {
+        "connect_timeout": 5,
+        "options": "-c lock_timeout=5000 -c statement_timeout=30000",
+    }
     engine = create_engine(
-        url, pool_pre_ping=True, connect_args={"check_same_thread": False} if url.startswith("sqlite") else {}
+        url, pool_pre_ping=True, hide_parameters=True, connect_args=connect_args
     )
     if url.startswith("sqlite"):
+        import json
+        import sqlite3
+
+        sqlite3.register_adapter(dict, json.dumps)
+        sqlite3.register_adapter(list, json.dumps)
 
         @event.listens_for(engine, "connect")
         def sqlite_constraints(connection, _):

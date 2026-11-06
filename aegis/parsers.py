@@ -65,7 +65,7 @@ class JSONParser(GenericParser):
 class LinuxAuthParser(GenericParser):
     def can_parse(self, event):
         return isinstance(event.raw_event, str) and any(
-            word in event.raw_event for word in ("sshd[", "sudo:", "useradd[")
+            word in event.raw_event for word in ("sshd[", "sshd-session[", "sshd:", "sudo:", "useradd[")
         )
 
     def parse(self, event):
@@ -87,7 +87,7 @@ class LinuxAuthParser(GenericParser):
                 source_port=int(auth[4]),
                 outcome="failure" if auth[1] == "Failed" else "success",
             )
-        host = re.search(r"\s([\w.-]+)\s+(?:sshd|sudo|useradd)(?:\[|:)", text)
+        host = re.search(r"\s([\w.-]+)\s+(?:[\w.]+\s+)?(?:sshd(?:-session)?|sudo|useradd)(?:\[|:)", text)
         if host:
             data["host"] = host[1]
         if "sudo:" in text:
@@ -253,6 +253,20 @@ class CloudParser(JSONParser):
         }
 
 
+def compute_event_id(organization_id: str, incoming: EventInput) -> str:
+    identity: dict = {
+        "tenant": organization_id,
+        "source": incoming.source,
+        "sequence": incoming.source_sequence,
+    }
+    if incoming.source_sequence is None:
+        identity.update(
+            raw=incoming.raw_event,
+            timestamp=incoming.timestamp.isoformat() if incoming.timestamp else None,
+        )
+    return str(uuid5(NAMESPACE_URL, canonical(identity)))
+
+
 class ParserRegistry:
     def __init__(self, plugins: list[Parser] | None = None):
         self.parsers = [
@@ -271,17 +285,7 @@ class ParserRegistry:
         self, incoming: EventInput, organization_id: str, accepted_at: datetime | None = None
     ) -> Event:
         accepted_at = accepted_at or datetime.now(UTC)
-        identity: dict = {
-            "tenant": organization_id,
-            "source": incoming.source,
-            "sequence": incoming.source_sequence,
-        }
-        if incoming.source_sequence is None:
-            identity.update(
-                raw=incoming.raw_event,
-                timestamp=incoming.timestamp.isoformat() if incoming.timestamp else None,
-            )
-        event_id = str(uuid5(NAMESPACE_URL, canonical(identity)))
+        event_id = compute_event_id(organization_id, incoming)
         parser = next(parser for parser in self.parsers if parser.can_parse(incoming))
         try:
             parsed = parser.parse(incoming)

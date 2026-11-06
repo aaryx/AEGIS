@@ -222,11 +222,16 @@ class RetentionEngine:
         cutoff = datetime.now(UTC) - timedelta(days=retention_days)
 
         with self.sessions.begin() as db:
+            from aegis.soar import lock_tenant
+
+            org_ids = list(db.scalars(select(Organization.id).order_by(Organization.id)))
+            if not dry_run:
+                for org_id in org_ids:
+                    lock_tenant(db, org_id)
             # 1. Prune expired transient states globally
             transient = self.prune_transient_state(db, dry_run=dry_run)
 
             # 2. Iterate each organization for tenant-isolated data retention
-            org_ids = list(db.scalars(select(Organization.id)))
             for org_id in org_ids:
                 summary = self.prune_organization_events(
                     db,

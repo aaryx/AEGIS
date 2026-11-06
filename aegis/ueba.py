@@ -304,8 +304,17 @@ def analyze(db, org, end, cfg, refresh_only=False):
 def process_jobs(settings, sessions):
     """One durable bounded job per iteration. Transaction rollback precedes retry."""
     with sessions.begin() as db:
+        candidate = db.execute(
+            select(BehaviorJob.id, BehaviorJob.organization_id)
+            .where(BehaviorJob.state.in_(["PENDING", "RETRY"]), BehaviorJob.available_at <= time.time())
+            .order_by(BehaviorJob.created_at, BehaviorJob.id).limit(1)
+        ).first()
+        if not candidate:
+            return 0
+        lock_tenant(db, candidate.organization_id)
         job = db.scalar(
             select(BehaviorJob)
+            .where(BehaviorJob.id == candidate.id)
             .where(BehaviorJob.state.in_(["PENDING", "RETRY"]), BehaviorJob.available_at <= time.time())
             .order_by(BehaviorJob.created_at, BehaviorJob.id)
             .with_for_update(skip_locked=True)

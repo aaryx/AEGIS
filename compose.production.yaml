@@ -3,11 +3,12 @@
 name: aegis
 
 x-app-production: &app-production
-  environment:
+  environment: &production-environment
     ENVIRONMENT: production
     COOKIE_SECURE: "true"
     DATABASE_URL: postgresql+psycopg://aegis_runtime:${POSTGRES_RUNTIME_PASSWORD:-${POSTGRES_PASSWORD}}@postgres:5432/aegis?sslmode=verify-full&sslrootcert=/usr/share/opensearch/config/certs/root-ca.pem
     REDIS_URL: rediss://:${REDIS_PASSWORD:?Run python scripts/configure.py}@redis:6379/0?ssl_cert_reqs=required
+    REDIS_CA: /usr/share/opensearch/config/certs/root-ca.pem
     OPENSEARCH_URL: https://opensearch:9200
     OPENSEARCH_CA: /usr/share/opensearch/config/certs/root-ca.pem
   volumes:
@@ -19,6 +20,20 @@ x-app-production: &app-production
         create_host_path: false
 
 services:
+  postgres:
+    command: [postgres, -c, ssl=on, -c, ssl_cert_file=/etc/aegis-tls/server.pem, -c, ssl_key_file=/etc/aegis-tls/server-key.pem, -c, hba_file=/etc/aegis-tls/pg_hba.conf]
+    volumes:
+      - ./certs/postgres:/etc/aegis-tls:ro
+      - ./deploy/postgres/pg_hba.conf:/etc/aegis-tls/pg_hba.conf:ro
+  redis:
+    command: [sh, -c, 'exec redis-server --port 0 --tls-port 6379 --tls-cert-file /etc/aegis-tls/server.pem --tls-key-file /etc/aegis-tls/server-key.pem --tls-ca-cert-file /etc/aegis-tls/root-ca.pem --tls-auth-clients no --appendonly yes --requirepass "$$REDIS_PASSWORD" --maxmemory 256mb --maxmemory-policy noeviction']
+    volumes:
+      - ./certs/redis:/etc/aegis-tls:ro
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli --tls --cacert /etc/aegis-tls/root-ca.pem -h redis ping | grep PONG']
+      interval: 10s
+      timeout: 5s
+      retries: 10
   opensearch:
     environment:
       plugins.security.ssl.http.enabled: "true"
@@ -48,8 +63,17 @@ services:
 
   initialize:
     <<: *app-production
+    environment:
+      <<: *production-environment
+      DATABASE_URL: postgresql+psycopg://aegis:${POSTGRES_PASSWORD:?Run python scripts/configure.py}@postgres:5432/aegis?sslmode=verify-full&sslrootcert=/usr/share/opensearch/config/certs/root-ca.pem
 
   retention:
+    <<: *app-production
+    environment:
+      <<: *production-environment
+      DATABASE_URL: postgresql+psycopg://aegis_maintenance:${POSTGRES_MAINTENANCE_PASSWORD:-${POSTGRES_PASSWORD}}@postgres:5432/aegis?sslmode=verify-full&sslrootcert=/usr/share/opensearch/config/certs/root-ca.pem
+
+  cli:
     <<: *app-production
 
   notifications:

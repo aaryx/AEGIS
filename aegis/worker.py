@@ -4,15 +4,25 @@ import signal
 import threading
 import time
 
-from redis import Redis
 from sqlalchemy import delete, select
+from sqlalchemy.exc import DBAPIError
 
 from aegis.config import get_settings
 from aegis.db import EventRecord, SearchJob, WindowState, WorkerHeartbeat, database
 from aegis.pipeline import detect_batch
+from aegis.soar import lock_tenant
 from aegis.storage import LocalStorage, OpenSearchStorage
+from aegis.transport import redis_client
 
 logger = logging.getLogger("aegis.worker")
+
+
+def transaction_failure(exc):
+    """Retry the transaction, never classify deadlocks/disconnects as poison evidence."""
+    return isinstance(exc, DBAPIError) and (
+        exc.connection_invalidated
+        or getattr(exc.orig, "sqlstate", None) in {"40001", "40P01", "55P03", "57014"}
+    )
 
 
 def heartbeat(db, worker_id, processed=0):
@@ -71,10 +81,21 @@ def project_once(settings, sessions, storage) -> int:
 def process_once(settings, sessions, storage, redis=None, worker_id="local") -> int:
     processed = 0
     with sessions.begin() as db:
+        # Discover without row locks, then acquire every tenant gate in stable
+        # order before locking resources. Recheck eligibility after waiting.
+        candidates = list(db.execute(
+            select(EventRecord.id, EventRecord.organization_id)
+            .where(EventRecord.state.in_(["PENDING", "RETRY"]), EventRecord.available_at <= time.time())
+            .order_by(EventRecord.available_at, EventRecord.timestamp, EventRecord.created_at, EventRecord.id)
+            .limit(settings.worker_batch_size)
+        ))
+        for org in sorted({row.organization_id for row in candidates}):
+            lock_tenant(db, org)
         records = list(
             db.scalars(
                 select(EventRecord)
                 .where(
+                    EventRecord.id.in_([row.id for row in candidates]),
                     EventRecord.state.in_(["PENDING", "RETRY"]),
                     EventRecord.available_at <= time.time(),
                 )
@@ -92,7 +113,9 @@ def process_once(settings, sessions, storage, redis=None, worker_id="local") -> 
                     with db.begin_nested():
                         detect_batch(db, settings, org_records, redis=redis)
                     processed += len(org_records)
-                except Exception:
+                except Exception as exc:
+                    if transaction_failure(exc):
+                        raise
                     # A poison event must not exhaust the retries of valid sibling events.
                     for record in org_records:
                         try:
@@ -100,6 +123,8 @@ def process_once(settings, sessions, storage, redis=None, worker_id="local") -> 
                                 detect_batch(db, settings, [record], redis=redis)
                             processed += 1
                         except Exception as exc:
+                            if transaction_failure(exc):
+                                raise
                             record.attempts += 1
                             record.state = "DEAD" if record.attempts >= settings.worker_max_attempts else "RETRY"
                             record.available_at = time.time() + min(300, 2**record.attempts)
@@ -129,11 +154,7 @@ def main():
     configure_logging()
     settings = get_settings()
     engine, sessions = database(settings.database_url)
-    redis = (
-        Redis.from_url(settings.redis_url, socket_timeout=3, socket_connect_timeout=3)
-        if settings.redis_url
-        else None
-    )
+    redis = redis_client(settings)
     storage = OpenSearchStorage(settings) if settings.opensearch_url else LocalStorage(sessions)
     worker_id = f"{os.environ.get('HOSTNAME', 'local')}-{os.getpid()}"
     stopped = threading.Event()

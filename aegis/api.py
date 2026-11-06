@@ -18,7 +18,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from prometheus_client import generate_latest
 from pydantic import Field
-from redis import Redis
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
@@ -120,6 +119,7 @@ from aegis.security import (
 from aegis.storage import LocalStorage, OpenSearchStorage
 from aegis.storylines import correlate
 from aegis.storylines import detail as storyline_detail
+from aegis.transport import redis_client
 
 logger = logging.getLogger("aegis.api")
 PREFIX = "/api/v1"
@@ -153,6 +153,7 @@ RESOURCES: dict[str, Any] = {
 
 class IngestBatch(StrictModel):
     events: list[EventInput] = Field(min_length=1, max_length=2000)
+    tenant_id: str | None = Field(default=None, max_length=64)
 
 
 class RuleWrite(StrictModel):
@@ -311,21 +312,20 @@ def create_app(settings: Settings | None = None):
         description="Tenant-scoped security operations API. Cookie sessions require X-CSRF-Token on writes. CLI clients may use bearer sessions or scoped API keys.",
     )
     app.state.settings, app.state.engine, app.state.sessions = settings, engine, sessions
-    app.state.redis = (
-        Redis.from_url(settings.redis_url, socket_timeout=3, socket_connect_timeout=3)
-        if settings.redis_url
-        else None
-    )
+    app.state.redis = redis_client(settings)
     app.state.storage = OpenSearchStorage(settings) if settings.opensearch_url else LocalStorage(sessions)
     app.add_middleware(BodyLimitMiddleware, maximum=settings.max_request_bytes)
     from aegis.integrations import router as integration_router
 
     app.include_router(integration_router)
     from aegis.soar_api import router as soar_router
+
     app.include_router(soar_router)
     from aegis.intel_api import router as intel_router
+
     app.include_router(intel_router)
     from aegis.ueba_api import router as ueba_router
+
     app.include_router(ueba_router)
 
     @app.middleware("http")
@@ -504,6 +504,11 @@ def create_app(settings: Settings | None = None):
         if request.headers.get("origin") not in {None, settings.public_origin}:
             raise HTTPException(403, "Untrusted request origin")
         rate_limit(request, "login:" + (request.client.host if request.client else "unknown"), 10)
+        from aegis.soar import lock_tenant
+
+        org_id = db.scalar(select(User.organization_id).where(User.username == data.username))
+        if org_id:
+            lock_tenant(db, org_id)
         user = db.scalar(select(User).where(User.username == data.username).with_for_update())
         valid = check_password(user.password_hash if user else DUMMY_PASSWORD_HASH, data.password)
         if not user or not user.active or user.locked_until > time.time() or not valid:
@@ -659,6 +664,13 @@ def create_app(settings: Settings | None = None):
     @app.post(PREFIX + "/auth/password-reset/complete", tags=["auth"])
     def reset_complete(data: ResetComplete, request: Request, db=Depends(db_session)):
         rate_limit(request, "reset:" + (request.client.host if request.client else "unknown"), 5)
+        from aegis.soar import lock_tenant
+
+        org_id = db.scalar(
+            select(PasswordReset.organization_id).where(PasswordReset.token_hash == token_hash(data.token))
+        )
+        if org_id:
+            lock_tenant(db, org_id)
         reset = db.scalar(
             select(PasswordReset)
             .where(
@@ -863,6 +875,26 @@ def create_app(settings: Settings | None = None):
         db=Depends(db_session),
     ):
         rate_limit(request, f"ingest:{principal.user.id}", 120)
+
+        # Trust Boundary 1: Destination tenant enforcement before persistence
+        intended_tenant = (
+            request.headers.get("x-aegis-tenant-id") or request.headers.get("x-tenant-id") or data.tenant_id
+        )
+        if intended_tenant and intended_tenant != principal.organization_id:
+            raise HTTPException(
+                403,
+                f"Destination tenant mismatch: payload destined for '{intended_tenant}' but credentials authenticated for '{principal.organization_id}'",
+            )
+
+        intended_collector = request.headers.get("x-aegis-collector-name")
+        if intended_collector:
+            for ev in data.events:
+                if ev.collector != intended_collector:
+                    raise HTTPException(
+                        400,
+                        f"Collector mismatch: event collector '{ev.collector}' does not match request collector '{intended_collector}'",
+                    )
+
         try:
             result = ingest(db, settings, principal.organization_id, data.events, principal.user.id, request)
         except OverflowError as exc:
@@ -914,7 +946,8 @@ def create_app(settings: Settings | None = None):
     @app.post(PREFIX + "/storylines/correlate", tags=["storylines"])
     def correlate_storylines(
         window_seconds: int = Query(1800, ge=1, le=86400),
-        principal=Depends(require("incidents.create")), db=Depends(db_session),
+        principal=Depends(require("incidents.create")),
+        db=Depends(db_session),
     ):
         require_evidence_scope(principal)
         if "incidents.update" not in principal.permissions:
@@ -925,28 +958,41 @@ def create_app(settings: Settings | None = None):
 
     @app.get(PREFIX + "/storylines", tags=["storylines"])
     def list_storylines(
-        limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
-        status: str = "", severity: str = "",
-        principal=Depends(require("incidents.read")), db=Depends(db_session),
+        limit: int = Query(50, ge=1, le=200),
+        offset: int = Query(0, ge=0),
+        status: str = "",
+        severity: str = "",
+        principal=Depends(require("incidents.read")),
+        db=Depends(db_session),
     ):
         require_evidence_scope(principal)
-        query = select(Storyline, Incident).join(Incident, Storyline.incident_id == Incident.id).where(
-            Storyline.organization_id == principal.organization_id,
-            Incident.organization_id == principal.organization_id,
+        query = (
+            select(Storyline, Incident)
+            .join(Incident, Storyline.incident_id == Incident.id)
+            .where(
+                Storyline.organization_id == principal.organization_id,
+                Incident.organization_id == principal.organization_id,
+            )
         )
         if status:
             query = query.where(Incident.status == status)
         if severity:
             query = query.where(Incident.severity == severity)
-        rows = db.execute(query.order_by(Storyline.created_at.desc(), Storyline.id)
-                          .offset(offset).limit(limit + 1)).all()
-        return {"items": [as_dict(s) | {"status": i.status, "severity": i.severity, "title": i.title}
-                          for s, i in rows[:limit]],
-                "next_offset": offset + limit if len(rows) > limit else None}
+        rows = db.execute(
+            query.order_by(Storyline.created_at.desc(), Storyline.id).offset(offset).limit(limit + 1)
+        ).all()
+        return {
+            "items": [
+                as_dict(s) | {"status": i.status, "severity": i.severity, "title": i.title}
+                for s, i in rows[:limit]
+            ],
+            "next_offset": offset + limit if len(rows) > limit else None,
+        }
 
     @app.get(PREFIX + "/storylines/{storyline_id}", tags=["storylines"])
-    def get_storyline(storyline_id: str, principal=Depends(require("incidents.read")),
-                      db=Depends(db_session)):
+    def get_storyline(
+        storyline_id: str, principal=Depends(require("incidents.read")), db=Depends(db_session)
+    ):
         require_evidence_scope(principal)
         story = owned(db, Storyline, storyline_id, principal.organization_id)
         result = storyline_detail(db, principal.organization_id, story)
@@ -1143,9 +1189,12 @@ def create_app(settings: Settings | None = None):
         principal=Depends(authenticate),
         db=Depends(db_session),
     ):
+        from aegis.soar import lock_tenant
+
         permission = "cases.write" if resource == "cases" else resource + ".update"
         if permission not in principal.permissions:
             raise HTTPException(403, "Permission denied")
+        lock_tenant(db, principal.organization_id)
         model = RESOURCES[resource]
         row = db.scalar(
             select(model)
@@ -1379,6 +1428,9 @@ def create_app(settings: Settings | None = None):
         principal=Depends(require("rules.write")),
         db=Depends(db_session),
     ):
+        from aegis.soar import lock_tenant
+
+        lock_tenant(db, principal.organization_id)
         clean_rule_id = rule_id.removeprefix("AEGIS-")
         clean_doc_id = data.document.id.removeprefix("AEGIS-")
         if clean_rule_id != clean_doc_id:
@@ -1443,6 +1495,9 @@ def create_app(settings: Settings | None = None):
         principal=Depends(require("rules.write")),
         db=Depends(db_session),
     ):
+        from aegis.soar import lock_tenant
+
+        lock_tenant(db, principal.organization_id)
         row = db.scalar(
             select(Rule)
             .where(
@@ -1494,6 +1549,9 @@ def create_app(settings: Settings | None = None):
         principal=Depends(require("rules.write")),
         db=Depends(db_session),
     ):
+        from aegis.soar import lock_tenant
+
+        lock_tenant(db, principal.organization_id)
         row = db.scalar(
             select(Rule)
             .where(
@@ -1549,7 +1607,11 @@ def create_app(settings: Settings | None = None):
             principal.user.id,
             "rules.rollback",
             row.id,
-            details={"from_version": old_version, "restored_version": data.target_version, "new_version": new_version},
+            details={
+                "from_version": old_version,
+                "restored_version": data.target_version,
+                "new_version": new_version,
+            },
             request=request,
         )
         db.commit()
@@ -1822,6 +1884,7 @@ def create_app(settings: Settings | None = None):
         db=Depends(db_session),
     ):
         from aegis.soar import lock_tenant
+
         lock_tenant(db, principal.organization_id)
         row = db.scalar(
             select(PlaybookExecution)
@@ -1900,6 +1963,15 @@ def create_app(settings: Settings | None = None):
         db=Depends(db_session),
     ):
         rate_limit(request, f"enroll:{data.name}", 10)
+        from aegis.soar import lock_tenant
+
+        org_id = db.scalar(
+            select(AgentEnrollmentToken.organization_id).where(
+                AgentEnrollmentToken.token_hash == token_hash(data.enrollment_token)
+            )
+        )
+        if org_id:
+            lock_tenant(db, org_id)
         token_record = db.scalar(
             select(AgentEnrollmentToken)
             .where(
@@ -1922,7 +1994,9 @@ def create_app(settings: Settings | None = None):
             .with_for_update()
         )
         if agent and agent.status == "REVOKED":
-            raise HTTPException(403, "Agent identity is revoked. Re-enrollment prohibited without admin re-activation.")
+            raise HTTPException(
+                403, "Agent identity is revoked. Re-enrollment prohibited without admin re-activation."
+            )
 
         # Burn single-use enrollment token
         token_record.used = True
@@ -2034,13 +2108,16 @@ def create_app(settings: Settings | None = None):
         db=Depends(db_session),
     ):
         from aegis.soar import lock_tenant
+
         lock_tenant(db, principal.organization_id)
         db.expire_all()
         agent = db.scalar(
-            select(Agent).where(
+            select(Agent)
+            .where(
                 Agent.organization_id == principal.organization_id,
                 Agent.name == name,
-            ).with_for_update()
+            )
+            .with_for_update()
         )
         if not agent or agent.status != "ENROLLED":
             raise HTTPException(404, "Enrolled agent not found")
@@ -2077,13 +2154,16 @@ def create_app(settings: Settings | None = None):
         db=Depends(db_session),
     ):
         from aegis.soar import lock_tenant
+
         lock_tenant(db, principal.organization_id)
         db.expire_all()
         agent = db.scalar(
-            select(Agent).where(
+            select(Agent)
+            .where(
                 Agent.organization_id == principal.organization_id,
                 Agent.name == name,
-            ).with_for_update()
+            )
+            .with_for_update()
         )
         if not agent:
             raise HTTPException(404, "Agent not found")
@@ -2116,12 +2196,14 @@ def create_app(settings: Settings | None = None):
         for exec_row in pending_executions:
             exec_row.status = "CANCELLED"
             res = dict(exec_row.result or {})
-            res.update({
-                "cancelled_at": now().isoformat(),
-                "error": "Agent identity was revoked prior to execution",
-                "containment_status": "UNKNOWN",
-                "enforced_externally": False,
-            })
+            res.update(
+                {
+                    "cancelled_at": now().isoformat(),
+                    "error": "Agent identity was revoked prior to execution",
+                    "containment_status": "UNKNOWN",
+                    "enforced_externally": False,
+                }
+            )
             exec_row.result = res
             exec_row.revision += 1
             audit(
@@ -2157,12 +2239,15 @@ def create_app(settings: Settings | None = None):
     ):
         if "agents.heartbeat" not in principal.permissions and "collectors.read" not in principal.permissions:
             raise HTTPException(403, "Permission denied")
-        if principal.agent is not None and (principal.agent.name != data.name or principal.agent.status != "ENROLLED"):
+        if principal.agent is not None and (
+            principal.agent.name != data.name or principal.agent.status != "ENROLLED"
+        ):
             raise HTTPException(403, "Agent not authorized to heartbeat for another endpoint")
 
         rate_limit(request, f"agent:{data.name}", 60)
         from aegis.db import Collector, Entity, now
         from aegis.soar import lock_tenant
+
         lock_tenant(db, principal.organization_id)
 
         # Update Agent table if registered
@@ -2261,7 +2346,11 @@ def create_app(settings: Settings | None = None):
             principal.user.id,
             "agents.heartbeat",
             collector.id,
-            details={"name": data.name, "status": data.status, "isolation_status": agent_row.isolation_status if agent_row else "UNKNOWN"},
+            details={
+                "name": data.name,
+                "status": data.status,
+                "isolation_status": agent_row.isolation_status if agent_row else "UNKNOWN",
+            },
             request=request,
         )
         db.commit()
@@ -2289,6 +2378,7 @@ def create_app(settings: Settings | None = None):
                 raise HTTPException(403, "Agent not authorized for this host")
 
         from aegis.soar import lock_tenant
+
         lock_tenant(db, principal.organization_id)
 
         entity = db.scalar(
@@ -2310,16 +2400,20 @@ def create_app(settings: Settings | None = None):
                     PlaybookExecution.status.in_(["APPROVED", "DISPATCHED"]),
                     PlaybookExecution.target.in_(target_ids),
                 )
-                .order_by((PlaybookExecution.status == "DISPATCHED").desc(), PlaybookExecution.created_at.asc())
+                .order_by(
+                    (PlaybookExecution.status == "DISPATCHED").desc(), PlaybookExecution.created_at.asc()
+                )
                 .limit(1)
             )
         )
 
         agent = db.scalar(
-            select(Agent).where(
+            select(Agent)
+            .where(
                 Agent.organization_id == principal.organization_id,
                 Agent.name == name,
-            ).with_for_update()
+            )
+            .with_for_update()
         )
         if not agent or agent.status != "ENROLLED":
             raise HTTPException(403, "Agent identity is not enrolled or is revoked")
@@ -2353,17 +2447,19 @@ def create_app(settings: Settings | None = None):
                 res_dict["controller_public_key"] = ctrl_pub
                 execution.result = res_dict
 
-            results.append({
-                "id": execution.id,
-                "action": execution.action,
-                "target": execution.target,
-                "status": execution.status,
-                "created_at": execution.created_at.isoformat(),
-                "params": res_dict.get("params", {}),
-                "envelope": envelope,
-                "controller_signature": ctrl_sig,
-                "controller_public_key": ctrl_pub,
-            })
+            results.append(
+                {
+                    "id": execution.id,
+                    "action": execution.action,
+                    "target": execution.target,
+                    "status": execution.status,
+                    "created_at": execution.created_at.isoformat(),
+                    "params": res_dict.get("params", {}),
+                    "envelope": envelope,
+                    "controller_signature": ctrl_sig,
+                    "controller_public_key": ctrl_pub,
+                }
+            )
         db.commit()
         return results
 
@@ -2381,6 +2477,7 @@ def create_app(settings: Settings | None = None):
         rate_limit(request, f"receipt:{data.command_id}", 30)
 
         from aegis.soar import lock_tenant
+
         lock_tenant(db, principal.organization_id)
         db.expire_all()
         # Enforce agent-to-host authorization
@@ -2410,7 +2507,9 @@ def create_app(settings: Settings | None = None):
         if not execution:
             raise HTTPException(404, "Command execution not found")
         if execution.status not in {"APPROVED", "DISPATCHED"}:
-            raise HTTPException(409, f"Command execution status is '{execution.status}', not awaiting receipt")
+            raise HTTPException(
+                409, f"Command execution status is '{execution.status}', not awaiting receipt"
+            )
         if execution.action != data.action:
             raise HTTPException(409, "Receipt action does not match execution command")
 
@@ -2432,9 +2531,16 @@ def create_app(settings: Settings | None = None):
             res["expired_at"] = now().isoformat()
             res["error"] = "Command expired prior to receipt submission"
             execution.result = res
-            audit(db, settings, principal.organization_id, principal.user.id,
-                  "playbooks.expired", execution.id,
-                  details={"containment_status": "UNKNOWN", "enforced_externally": False}, request=request)
+            audit(
+                db,
+                settings,
+                principal.organization_id,
+                principal.user.id,
+                "playbooks.expired",
+                execution.id,
+                details={"containment_status": "UNKNOWN", "enforced_externally": False},
+                request=request,
+            )
             db.commit()
             raise HTTPException(409, "Command execution has expired")
 
@@ -2481,7 +2587,11 @@ def create_app(settings: Settings | None = None):
 
         # 5. Freshness / challenge expiration check
         receipt_ts = data.receipt.get("timestamp")
-        if isinstance(receipt_ts, bool) or not isinstance(receipt_ts, (int, float)) or not math.isfinite(receipt_ts):
+        if (
+            isinstance(receipt_ts, bool)
+            or not isinstance(receipt_ts, (int, float))
+            or not math.isfinite(receipt_ts)
+        ):
             raise HTTPException(400, "Receipt missing valid timestamp")
         if abs(time.time() - float(receipt_ts)) > 300.0:
             raise HTTPException(400, "Receipt timestamp expired or outside freshness window")
@@ -2519,14 +2629,19 @@ def create_app(settings: Settings | None = None):
         if not expected_ctrl_sig and target_status in {"ENFORCED", "RELEASED"}:
             target_status = "UNKNOWN"
         target_result = {
-            "semantics_version": 2, "verified": target_status in {"ENFORCED", "RELEASED"},
+            "semantics_version": 2,
+            "verified": target_status in {"ENFORCED", "RELEASED"},
             "receipt_authenticated": True,
             "scope": "endpoint-simulation" if target_status == "SIMULATED" else "agent-reported",
             "enforced_externally": target_status == "ENFORCED",
-            "containment_status": target_status, "agent": name, "action": data.action,
-            "receipt": data.receipt, "signature": data.signature,
+            "containment_status": target_status,
+            "agent": name,
+            "action": data.action,
+            "receipt": data.receipt,
+            "signature": data.signature,
             "receipt_hash": hashlib.sha256(canonical(data.receipt).encode()).hexdigest(),
-            "details": receipt_details, "recorded_at": now().isoformat(),
+            "details": receipt_details,
+            "recorded_at": now().isoformat(),
             "params": (execution.result or {}).get("params", {}),
         }
 
@@ -2573,7 +2688,8 @@ def create_app(settings: Settings | None = None):
             state = target_status if target_status in {"ENFORCED", "RELEASED", "SIMULATED"} else "UNKNOWN"
             if target:
                 target.attributes = dict(target.attributes or {}) | {
-                    "isolation_status": state, "containment_execution_id": execution.id,
+                    "isolation_status": state,
+                    "containment_execution_id": execution.id,
                     "containment_semantics_version": 2,
                 }
             agent.isolation_status = state
@@ -2618,9 +2734,7 @@ def create_app(settings: Settings | None = None):
         }
         agents_map = {
             a.name: a
-            for a in db.scalars(
-                select(Agent).where(Agent.organization_id == principal.organization_id)
-            )
+            for a in db.scalars(select(Agent).where(Agent.organization_id == principal.organization_id))
         }
         return [
             {
@@ -2630,8 +2744,11 @@ def create_app(settings: Settings | None = None):
                 "version": c.version,
                 "status": agents_map[c.name].status if c.name in agents_map else "ONLINE",
                 "last_heartbeat": c.last_heartbeat.isoformat(),
-                "isolation_status": (hosts[c.name].attributes.get("isolation_status", "UNKNOWN")
-                    if hosts[c.name].attributes.get("containment_semantics_version") == 2 else "UNKNOWN")
+                "isolation_status": (
+                    hosts[c.name].attributes.get("isolation_status", "UNKNOWN")
+                    if hosts[c.name].attributes.get("containment_semantics_version") == 2
+                    else "UNKNOWN"
+                )
                 if c.name in hosts and hosts[c.name] and hosts[c.name].attributes
                 else "UNKNOWN",
                 "os": hosts[c.name].attributes.get("os", "unknown")
@@ -2696,6 +2813,9 @@ def create_app(settings: Settings | None = None):
     def retry_search(
         event_id: str, request: Request, principal=Depends(require("system.manage")), db=Depends(db_session)
     ):
+        from aegis.soar import lock_tenant
+
+        lock_tenant(db, principal.organization_id)
         row = db.scalar(
             select(SearchJob)
             .where(SearchJob.event_id == event_id, SearchJob.organization_id == principal.organization_id)

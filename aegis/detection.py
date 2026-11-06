@@ -1,8 +1,8 @@
 import json
 import statistics
 import time
-from datetime import datetime
-from typing import Protocol
+from datetime import UTC, datetime
+from typing import Any, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,6 +10,28 @@ from sqlalchemy.orm import Session
 from aegis.db import WindowState
 from aegis.parsers import digest
 from aegis.schemas import DetectionRule, get_field
+
+
+def _event_timestamp(item: dict[str, Any] | Any) -> float:
+    if isinstance(item, dict):
+        ts = item.get("timestamp")
+    else:
+        ts = getattr(item, "timestamp", item)
+    if isinstance(ts, bool):
+        return 0.0
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    if isinstance(ts, datetime):
+        return ts.replace(tzinfo=UTC).timestamp() if ts.tzinfo is None else ts.astimezone(UTC).timestamp()
+    if isinstance(ts, str):
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+        except Exception:
+            try:
+                return float(ts)
+            except Exception:
+                return 0.0
+    return 0.0
 
 
 class StateStore(Protocol):
@@ -50,21 +72,26 @@ class SQLState:
             select(WindowState).where(WindowState.key == key).with_for_update()
         )
         values = list(row.data) if (row and row.data) else []
-        current = datetime.fromisoformat(event["timestamp"]).timestamp()
+        current = _event_timestamp(event)
+        if current <= 0.0:
+            raise ValueError("Event has invalid or missing timestamp")
         watermark = max(
-            [current, *(datetime.fromisoformat(item["timestamp"]).timestamp() for item in values)]
+            [current, *(_event_timestamp(item) for item in values)]
         )
         if current < watermark - self.lateness:
             raise ValueError("Event is older than the correlation lateness budget")
         values = [
             item
             for item in values
-            if watermark - window - self.lateness <= datetime.fromisoformat(item["timestamp"]).timestamp()
+            if watermark - window - self.lateness <= _event_timestamp(item)
             and item["event_id"] != event["event_id"]
         ]
-        values.append(event)
+        event_to_store = dict(event)
+        if not isinstance(event_to_store.get("timestamp"), str):
+            event_to_store["timestamp"] = datetime.fromtimestamp(current, tz=UTC).isoformat()
+        values.append(event_to_store)
         values.sort(
-            key=lambda item: (datetime.fromisoformat(item["timestamp"]).timestamp(), item["event_id"])
+            key=lambda item: (_event_timestamp(item), item["event_id"])
         )
         if len(values) > self.limit:
             raise ValueError("Correlation window capacity exceeded; tune rule or increase configured limit")
@@ -80,7 +107,7 @@ class SQLState:
         return [
             item
             for item in values
-            if current - window <= datetime.fromisoformat(item["timestamp"]).timestamp() <= current
+            if current - window <= _event_timestamp(item) <= current
         ]
 
 
@@ -139,7 +166,7 @@ def evaluate(rule: DetectionRule, event: dict, state: StateStore, namespace: str
         trigger = step < 0
     elif condition.type == "beacon" and len(values) >= condition.count:
         matched = values[-condition.count :]
-        times = [datetime.fromisoformat(item["timestamp"]).timestamp() for item in matched]
+        times = [_event_timestamp(item) for item in matched]
         gaps = [later - earlier for earlier, later in zip(times, times[1:], strict=False)]
         measured = statistics.pstdev(gaps) / statistics.mean(gaps) if statistics.mean(gaps) > 0 else 1
         trigger = measured <= condition.tolerance and min(gaps) >= 1

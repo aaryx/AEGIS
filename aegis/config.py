@@ -6,12 +6,33 @@ from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def validate_postgres_transport(url: str):
+    if urlparse(url).scheme not in {"postgresql", "postgresql+psycopg"}:
+        raise ValueError("Production requires PostgreSQL")
+    parsed_db = urlparse(url)
+    db_params = parse_qs(parsed_db.query, keep_blank_values=True)
+    if any(len(values) != 1 or not values[0] for values in db_params.values()):
+        raise ValueError("Production PostgreSQL parameters must be unique and nonempty")
+    if not parsed_db.hostname or any(k in db_params for k in ("host", "hostaddr", "service")):
+        raise ValueError("Production PostgreSQL requires an explicit URL hostname without overrides")
+    sslmode = db_params.get("sslmode", [None])[0]
+    if sslmode != "verify-full":
+        raise ValueError(
+            "Production requires verified PostgreSQL TLS (sslmode=verify-full with sslrootcert). "
+            "sslmode=require alone does not verify certificates or hostnames."
+        )
+    if not db_params.get("sslrootcert", [None])[0]:
+        raise ValueError(
+            "Production requires PostgreSQL CA certificate path (sslrootcert) for TLS verification"
+        )
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", hide_input_in_errors=True)
 
     environment: Literal["development", "testing", "production"] = "development"
-    database_url: str = "sqlite:///./aegis.db"
-    redis_url: str | None = None
+    database_url: str = Field("sqlite:///./aegis.db", repr=False)
+    redis_url: str | None = Field(None, repr=False)
     redis_ca: str | None = None
     opensearch_url: str | None = None
     opensearch_username: str = "aegis"
@@ -67,7 +88,7 @@ class Settings(BaseSettings):
     retention_days: int = Field(90, ge=7)
     retention_batch_size: int = Field(500, ge=10, le=5000)
     retention_interval_seconds: int = Field(3600, ge=60)
-    maintenance_database_url: str | None = None
+    maintenance_database_url: str | None = Field(None, repr=False)
     opensearch_replicas: int = Field(0, ge=0, le=5)
     max_entities_per_event: int = Field(15, ge=2, le=50)
     ai_provider: Literal["local", "openai", "azure"] = "local"
@@ -80,31 +101,26 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def secure_configuration(self):
         if self.environment == "production":
-            if not self.database_url.startswith("postgresql"):
-                raise ValueError("Production requires PostgreSQL")
-            parsed_db = urlparse(self.database_url)
-            db_params = parse_qs(parsed_db.query)
-            sslmode = db_params.get("sslmode", [None])[0]
-            if sslmode not in {"verify-full", "verify-ca"}:
-                raise ValueError(
-                    "Production requires verified PostgreSQL TLS (sslmode=verify-full or sslmode=verify-ca with sslrootcert). "
-                    "sslmode=require alone does not verify certificates or hostnames."
-                )
-            if not db_params.get("sslrootcert", [None])[0]:
-                raise ValueError(
-                    "Production requires PostgreSQL CA certificate path (sslrootcert) for TLS verification"
-                )
+            validate_postgres_transport(self.database_url)
+            if self.maintenance_database_url:
+                validate_postgres_transport(self.maintenance_database_url)
 
             if not self.redis_url or not self.opensearch_url:
                 raise ValueError("Production requires Redis and OpenSearch")
             if not self.redis_url.startswith("rediss://"):
                 raise ValueError("Production requires TLS for Redis (rediss://)")
             parsed_redis = urlparse(self.redis_url)
-            redis_params = parse_qs(parsed_redis.query)
+            redis_params = parse_qs(parsed_redis.query, keep_blank_values=True)
+            if any(len(values) != 1 or not values[0] for values in redis_params.values()):
+                raise ValueError("Production Redis parameters must be unique and nonempty")
             ssl_cert_reqs = redis_params.get("ssl_cert_reqs", [None])[0]
-            if ssl_cert_reqs in {"none", "optional", "0"}:
+            if ssl_cert_reqs not in {None, "required"}:
                 raise ValueError("Production Redis TLS certificate verification must not be disabled")
-            if not parsed_redis.password and not parsed_redis.username:
+            if redis_params.get("ssl_check_hostname", ["true"])[0].lower() != "true":
+                raise ValueError("Production Redis requires TLS hostname verification")
+            if set(redis_params) - {"ssl_cert_reqs", "ssl_check_hostname", "db"}:
+                raise ValueError("Production Redis URL contains unsupported overrides; configure trust with REDIS_CA")
+            if not parsed_redis.hostname or not parsed_redis.password:
                 raise ValueError("Production requires authenticated Redis connection")
 
             if not self.opensearch_url.startswith("https://"):

@@ -140,3 +140,63 @@ def test_ai_minimization_and_untrusted_logs():
     assert all(set(claim.event_ids) <= {"event-1"} for claim in analysis.claims)
     with pytest.raises(ValueError):
         LocalProvider().query("failed logins followed by a successful login")
+
+
+def test_sql_state_timestamp_polymorphism_and_lateness_rejection():
+    """SQLState accepts datetime objects, epoch floats, and ISO strings, and enforces lateness budgets."""
+    engine, sessions = database("sqlite://")
+    Base.metadata.create_all(engine)
+
+    base_time = datetime(2026, 10, 1, 12, 0, 0, tzinfo=UTC)
+
+    with sessions() as db:
+        state = SQLState(db, lateness=60, limit=5)
+        # 1. Append with ISO string
+        ev1 = {"event_id": "ev-01", "timestamp": base_time.isoformat(), "host": "srv-1"}
+        res1 = state.append("k1", ev1, window=300)
+        assert len(res1) == 1
+
+        # 2. Append with datetime object (polymorphic support)
+        ev2 = {"event_id": "ev-02", "timestamp": base_time + timedelta(seconds=10), "host": "srv-1"}
+        res2 = state.append("k1", ev2, window=300)
+        assert len(res2) == 2
+
+        # 3. Append with epoch float
+        ev3 = {"event_id": "ev-03", "timestamp": (base_time + timedelta(seconds=20)).timestamp(), "host": "srv-1"}
+        res3 = state.append("k1", ev3, window=300)
+        assert len(res3) == 3
+
+        # 4. Late event older than lateness budget (watermark = +20s, ev_late = -50s -> diff 70s > 60s)
+        ev_late = {"event_id": "ev-late", "timestamp": base_time - timedelta(seconds=50), "host": "srv-1"}
+        with pytest.raises(ValueError, match="correlation lateness budget"):
+            state.append("k1", ev_late, window=300)
+
+        # 5. Exceed window capacity limit (limit=5)
+        for i in range(4, 6):
+            state.append("k1", {"event_id": f"ev-{i:02d}", "timestamp": base_time + timedelta(seconds=20 + i), "host": "srv-1"}, window=300)
+        with pytest.raises(ValueError, match="Correlation window capacity exceeded"):
+            state.append("k1", {"event_id": "ev-overflow", "timestamp": base_time + timedelta(seconds=30), "host": "srv-1"}, window=300)
+
+
+def test_sql_state_rejects_invalid_ambiguous_and_boolean_timestamps():
+    """SQLState rejects missing, invalid, ambiguous, or boolean timestamps to prevent state corruption."""
+    engine, sessions = database("sqlite://")
+    Base.metadata.create_all(engine)
+
+    with sessions() as db:
+        state = SQLState(db, lateness=60, limit=5)
+        # 1. Unparseable string timestamp
+        with pytest.raises(ValueError, match="invalid or missing timestamp"):
+            state.append("k2", {"event_id": "ev-bad-1", "timestamp": "not-a-timestamp"}, window=300)
+
+        # 2. Boolean timestamp
+        with pytest.raises(ValueError, match="invalid or missing timestamp"):
+            state.append("k2", {"event_id": "ev-bad-2", "timestamp": True}, window=300)
+
+        # 3. None timestamp
+        with pytest.raises(ValueError, match="invalid or missing timestamp"):
+            state.append("k2", {"event_id": "ev-bad-3", "timestamp": None}, window=300)
+
+        # 4. Empty dict timestamp
+        with pytest.raises(ValueError, match="invalid or missing timestamp"):
+            state.append("k2", {"event_id": "ev-bad-4"}, window=300)

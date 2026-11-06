@@ -494,3 +494,211 @@ def test_soar_audit_resource_id_on_decision_rejection_and_trigger(system):
         assert dec_audit is not None
         assert dec_audit.resource_id == run_id
 
+
+def test_soar_engine_blocks_self_approval_defense_in_depth(system):
+    """Engine defense-in-depth: advance() rejects execution if approved_by equals requested_by."""
+    from aegis.soar import advance
+
+    containment_doc = {
+        "description": "Block host containment",
+        "trigger": {"source": "incident"},
+        "input_schema": {"target_id": "entity"},
+        "steps": [{"id": "block", "action": "simulate_block_ip"}],
+    }
+    book, source, target_id = setup(system, containment_doc)
+    client = system["client"]
+    client.headers["Authorization"] = "Bearer " + system["tokens"]["SENIOR_ANALYST"]
+    run_resp = client.post(
+        f"/api/v1/soar/playbooks/{book['id']}/execute",
+        json={
+            "source_type": "incident",
+            "source_id": source,
+            "inputs": {"target_id": target_id},
+            "idempotency_key": "self-appr-exec-01",
+            "dry_run": False,
+        },
+    )
+    assert run_resp.status_code == 200
+    run_id = run_resp.json()["id"]
+
+    # Deliberately inject self-approval into the DB row to test advance() guard
+    with system["app"].state.sessions.begin() as db:
+        run = db.get(WorkflowRun, run_id)
+        assert run is not None
+        run.approved_by = run.requested_by  # Self-approval
+        run.approved_at = time.time()
+        run.status = "RUNNING"
+        advance(db, system["settings"], run)
+
+    # advance() must detect self-approval, strip approval, and force status to WAITING_FOR_APPROVAL
+    with system["app"].state.sessions() as db:
+        refreshed = db.get(WorkflowRun, run_id)
+        assert refreshed.status == "WAITING_FOR_APPROVAL"
+        assert refreshed.approved_by is None
+        assert refreshed.approved_at is None
+
+
+def test_soar_decision_rejects_api_key_approval(system):
+    """API key tokens cannot approve SOAR workflow runs; independent human operator required."""
+    from aegis.db import APIKey
+    from aegis.security import token_hash
+
+    containment_doc = {
+        "description": "Block host containment",
+        "trigger": {"source": "incident"},
+        "input_schema": {"target_id": "entity"},
+        "steps": [{"id": "block", "action": "simulate_block_ip"}],
+    }
+    book, source, target_id = setup(system, containment_doc)
+    client = system["client"]
+    client.headers["Authorization"] = "Bearer " + system["tokens"]["SENIOR_ANALYST"]
+    run_resp = client.post(
+        f"/api/v1/soar/playbooks/{book['id']}/execute",
+        json={
+            "source_type": "incident",
+            "source_id": source,
+            "inputs": {"target_id": target_id},
+            "idempotency_key": "apikey-appr-exec-01",
+            "dry_run": False,
+        },
+    )
+    assert run_resp.status_code == 200
+    run_id = run_resp.json()["id"]
+    tick(system)
+    assert get(system, run_id)["status"] == "WAITING_FOR_APPROVAL"
+
+    # Provision an API key with playbooks.approve permission for a SOC_MANAGER
+    raw_api_key = "aegis_key_" + "a" * 40
+    with system["app"].state.sessions.begin() as db:
+        mgr = system["users"]["SOC_MANAGER"]
+        key_record = APIKey(
+            organization_id=system["org"],
+            user_id=mgr.id,
+            name="Automated SOAR Bot",
+            key_hash=token_hash(raw_api_key),
+            permissions=["playbooks.read", "playbooks.approve", "events.read", "alerts.read", "incidents.read", "entities.read", "iocs.read"],
+            expires=time.time() + 3600,
+            revoked=False,
+        )
+        db.add(key_record)
+
+    # API key attempts approval decision
+    client.headers["Authorization"] = f"Bearer {raw_api_key}"
+    resp = client.post(
+        f"/api/v1/soar/executions/{run_id}/decision",
+        json={"decision": "approve"},
+    )
+    assert resp.status_code == 403
+    assert "Independent human approval required" in resp.json()["error"]["message"]
+def test_soar_adversarial_approval_matrix(system):
+    """Adversarial approval matrix: self-approval denial, role gating, and independent approval."""
+    containment_doc = {
+        "description": "Block host containment",
+        "trigger": {"source": "incident"},
+        "input_schema": {"target_id": "entity"},
+        "steps": [{"id": "block", "action": "simulate_block_ip"}],
+    }
+    book, source, target_id = setup(system, containment_doc)
+    client = system["client"]
+
+    # 1. SOC_MANAGER requests execution
+    client.headers["Authorization"] = "Bearer " + system["tokens"]["SOC_MANAGER"]
+    run_resp = client.post(
+        f"/api/v1/soar/playbooks/{book['id']}/execute",
+        json={
+            "source_type": "incident",
+            "source_id": source,
+            "inputs": {"target_id": target_id},
+            "idempotency_key": "adv-matrix-exec-01",
+            "dry_run": False,
+        },
+    )
+    assert run_resp.status_code == 200
+    run_id = run_resp.json()["id"]
+    tick(system)
+    assert get(system, run_id)["status"] == "WAITING_FOR_APPROVAL"
+
+    # 2. Requester (SOC_MANAGER) attempts self-approval -> 403 Independent human approval required
+    self_resp = client.post(
+        f"/api/v1/soar/executions/{run_id}/decision",
+        json={"decision": "approve"},
+    )
+    assert self_resp.status_code == 403
+    assert "Independent human approval required" in self_resp.json()["error"]["message"]
+
+    # 3. VIEWER attempts approval -> 403 Missing playbooks.approve
+    client.headers["Authorization"] = "Bearer " + system["tokens"]["VIEWER"]
+    viewer_resp = client.post(
+        f"/api/v1/soar/executions/{run_id}/decision",
+        json={"decision": "approve"},
+    )
+    assert viewer_resp.status_code == 403
+    assert "Missing playbooks.approve" in viewer_resp.json()["error"]["message"]
+
+    # 4. ANALYST attempts approval -> 403 Missing playbooks.approve
+    client.headers["Authorization"] = "Bearer " + system["tokens"]["ANALYST"]
+    analyst_resp = client.post(
+        f"/api/v1/soar/executions/{run_id}/decision",
+        json={"decision": "approve"},
+    )
+    assert analyst_resp.status_code == 403
+    assert "Missing playbooks.approve" in analyst_resp.json()["error"]["message"]
+
+    # 5. Independent human approver (SUPER_ADMIN) approves -> 200 OK
+    client.headers["Authorization"] = "Bearer " + system["tokens"]["SUPER_ADMIN"]
+    appr_resp = client.post(
+        f"/api/v1/soar/executions/{run_id}/decision",
+        json={"decision": "approve"},
+    )
+    assert appr_resp.status_code == 200
+    assert appr_resp.json()["status"] == "QUEUED"
+    assert appr_resp.json()["approved_by"] == system["users"]["SUPER_ADMIN"].id
+
+    # 6. advance() runs and completes containment successfully
+    tick(system)
+    final_run = get(system, run_id)
+    assert final_run["status"] == "SUCCEEDED"
+    assert final_run["approved_by"] is None
+
+
+def test_soar_engine_blocks_expired_approval(system):
+    """Engine defense-in-depth: advance() rejects execution if approval timestamp is older than TTL."""
+    from aegis.soar import advance
+
+    containment_doc = {
+        "description": "Block host containment",
+        "trigger": {"source": "incident"},
+        "input_schema": {"target_id": "entity"},
+        "steps": [{"id": "block", "action": "simulate_block_ip"}],
+    }
+    book, source, target_id = setup(system, containment_doc)
+    client = system["client"]
+    client.headers["Authorization"] = "Bearer " + system["tokens"]["SENIOR_ANALYST"]
+    run_resp = client.post(
+        f"/api/v1/soar/playbooks/{book['id']}/execute",
+        json={
+            "source_type": "incident",
+            "source_id": source,
+            "inputs": {"target_id": target_id},
+            "idempotency_key": "expired-appr-exec-01",
+            "dry_run": False,
+        },
+    )
+    assert run_resp.status_code == 200
+    run_id = run_resp.json()["id"]
+
+    # Deliberately inject an expired approval timestamp (7200 seconds ago)
+    with system["app"].state.sessions.begin() as db:
+        run = db.get(WorkflowRun, run_id)
+        assert run is not None
+        run.approved_by = system["users"]["SUPER_ADMIN"].id
+        run.approved_at = time.time() - 7200
+        run.status = "RUNNING"
+        advance(db, system["settings"], run)
+
+    # advance() must detect expired approval, strip approval, and force status to WAITING_FOR_APPROVAL
+    with system["app"].state.sessions() as db:
+        refreshed = db.get(WorkflowRun, run_id)
+        assert refreshed.status == "WAITING_FOR_APPROVAL"
+        assert refreshed.approved_by is None
+        assert refreshed.approved_at is None

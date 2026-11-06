@@ -56,7 +56,7 @@ class EndpointAgent:
         self,
         name: str | None = None,
         server_url: str = "http://127.0.0.1:8000",
-        token: str = "",
+        token: str | None = None,
         controller_ip: str = "127.0.0.1",
         simulation_mode: bool = True,
         signing_key: Ed25519PrivateKey | None = None,
@@ -66,7 +66,7 @@ class EndpointAgent:
     ) -> None:
         self.name = name or socket.gethostname()
         self.server_url = server_url.rstrip("/")
-        self.token = token
+        self.token = token or ""
         self.controller_ip = controller_ip
         self.simulation_mode = simulation_mode
         self.isolated = False
