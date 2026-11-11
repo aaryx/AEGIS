@@ -3,7 +3,7 @@
 name: aegis
 
 x-app-production: &app-production
-  environment:
+  environment: &production-environment
     ENVIRONMENT: production
     COOKIE_SECURE: "true"
     DATABASE_URL: postgresql+psycopg://aegis_runtime:${POSTGRES_RUNTIME_PASSWORD:-${POSTGRES_PASSWORD}}@postgres:5432/aegis?sslmode=verify-full&sslrootcert=/usr/share/opensearch/config/certs/root-ca.pem
@@ -51,6 +51,10 @@ services:
 
   retention:
     <<: *app-production
+    environment:
+      <<: *production-environment
+      # Retention deletes events and writes the audit chain, which aegis_runtime may not do.
+      DATABASE_URL: postgresql+psycopg://aegis_maintenance:${POSTGRES_MAINTENANCE_PASSWORD:-${POSTGRES_PASSWORD}}@postgres:5432/aegis?sslmode=verify-full&sslrootcert=/usr/share/opensearch/config/certs/root-ca.pem
 
   notifications:
     <<: *app-production

@@ -37,6 +37,22 @@ def test_production_application_services_mount_only_public_ca():
         assert mount["bind"]["create_host_path"] is False
 
 
+def test_production_retention_uses_maintenance_role_with_tls():
+    """B4: retention must delete as aegis_maintenance; aegis_runtime has DELETE on events revoked."""
+    config = yaml.safe_load(Path("compose.production.yaml").read_text())
+    url = config["services"]["retention"]["environment"]["DATABASE_URL"]
+    assert url.startswith("postgresql+psycopg://aegis_maintenance:")
+    assert "sslmode=verify-full" in url and "sslrootcert=" in url
+
+
+@pytest.mark.parametrize("name", ["api", "worker", "initialize", "notifications"])
+def test_production_runtime_services_keep_runtime_role_with_tls(name):
+    config = yaml.safe_load(Path("compose.production.yaml").read_text())
+    url = config["services"][name]["environment"]["DATABASE_URL"]
+    assert url.startswith("postgresql+psycopg://aegis_runtime:")
+    assert "sslmode=verify-full" in url
+
+
 @pytest.mark.parametrize("suffix", ["?dbname=aegis", "?host=production.internal", "?service=production"])
 def test_database_target_override_rejected(suffix):
     with pytest.raises(DatabaseSafetyError):
